@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2014 The Perkeep Authors
@@ -17,7 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -26,19 +26,19 @@ import (
 	"sync"
 	"time"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
 	"go4.org/syncutil"
 	"perkeep.org/pkg/blob"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	"perkeep.org/pkg/dokanfs/fuzeo/fs"
 	"perkeep.org/pkg/search"
 )
 
 const versionsRefreshTime = 1 * time.Minute
 
-// versionsDir implements fuse.Node containing all roots. Within this node,
-// - a directory permanode is represented with a fuse directory (roVersionsDir)
-// - a file permanode is represented with a fuse directory (roFileVersionsDir)
-// - a file version is represented with a fuse file (roFileVersion)
+// versionsDir implements fuzeo.Node containing all roots. Within this node,
+// - a directory permanode is represented with a fuzeo directory (roVersionsDir)
+// - a file permanode is represented with a fuzeo directory (roFileVersionsDir)
+// - a file version is represented with a fuzeo file (roFileVersion)
 // In this way you can navigate to a file at a specific point in time.
 // Basically is like `at` magic folder but the path (not the date) goes first.
 // It is read-only.
@@ -62,22 +62,22 @@ func (n *versionsDir) dirMode() os.FileMode {
 	return 0700
 }
 
-func (n *versionsDir) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *versionsDir) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = os.ModeDir | n.dirMode()
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
 	return nil
 }
 
-func (n *versionsDir) ReadDir(ctx context.Context) ([]fuse.Dirent, error) {
+func (n *versionsDir) ReadDir(ctx context.Context) ([]fuzeo.Dirent, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := n.condRefresh(ctx); err != nil {
 		return nil, handleEIOorEINTR(err)
 	}
-	var ents []fuse.Dirent
+	var ents []fuzeo.Dirent
 	for name := range n.m {
-		ents = append(ents, fuse.Dirent{Name: name})
+		ents = append(ents, fuzeo.Dirent{Name: name})
 	}
 	Logger.Printf("fs.versions.ReadDir() -> %v", ents)
 	return ents, nil
@@ -92,7 +92,7 @@ func (n *versionsDir) Lookup(ctx context.Context, name string) (fs.Node, error) 
 	}
 	br := n.m[name]
 	if !br.Valid() {
-		return nil, fuse.ENOENT
+		return nil, fuzeo.ENOENT
 	}
 
 	nod, ok := n.children[name]

@@ -1,5 +1,6 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
+
 
 /*
 Copyright 2013 The Perkeep Authors.
@@ -17,7 +18,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"testing"

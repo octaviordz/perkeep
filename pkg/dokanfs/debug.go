@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2013 The Perkeep Authors
@@ -17,7 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"bytes"
@@ -27,8 +27,8 @@ import (
 	"strconv"
 	"sync/atomic"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	"perkeep.org/pkg/dokanfs/fuzeo/fs"
 )
 
 // TrackStats controls whether statistics are kept on operations.
@@ -76,7 +76,7 @@ func (a *atomicInt64) Add(delta int64) int64 {
 	return atomic.AddInt64(&a.v, delta)
 }
 
-// A stat is a wrapper around an atomic int64, as is a fuse.Node
+// A stat is a wrapper around an atomic int64, as is a fuzeo.Node
 // exporting that data as a decimal.
 type stat struct {
 	n    atomicInt64
@@ -102,24 +102,24 @@ func (s *stat) content() []byte {
 	return buf.Bytes()
 }
 
-func (s *stat) Attr(ctx context.Context, a *fuse.Attr) error {
+func (s *stat) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = 0400
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
 	a.Size = uint64(len(s.content()))
 	a.Mtime = serverStart
 	a.Ctime = serverStart
-	a.Crtime = serverStart
+	// a.Crtime = serverStart
 	return nil
 }
 
-func (s *stat) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.OpenResponse) (fs.Handle, error) {
+func (s *stat) Open(ctx context.Context, req *fuzeo.OpenRequest, res *fuzeo.OpenResponse) (fs.Handle, error) {
 	// Set DirectIO to keep this file from being cached in OS X's kernel.
-	res.Flags |= fuse.OpenDirectIO
+	res.Flags |= fuzeo.OpenDirectIO
 	return s, nil
 }
 
-func (s *stat) Read(ctx context.Context, req *fuse.ReadRequest, res *fuse.ReadResponse) error {
+func (s *stat) Read(ctx context.Context, req *fuzeo.ReadRequest, res *fuzeo.ReadResponse) error {
 	c := s.content()
 	if req.Offset > int64(len(c)) {
 		return nil
@@ -144,25 +144,25 @@ var (
 	_ fs.HandleReadDirAller  = statsDir{}
 )
 
-func (statsDir) Attr(ctx context.Context, a *fuse.Attr) error {
+func (statsDir) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = os.ModeDir | 0700
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
 	return nil
 }
 
-func (statsDir) ReadDirAll(ctx context.Context) (ents []fuse.Dirent, err error) {
+func (statsDir) ReadDirAll(ctx context.Context) (ents []fuzeo.Dirent, err error) {
 	for k := range statByName {
-		ents = append(ents, fuse.Dirent{Name: k})
+		ents = append(ents, fuzeo.Dirent{Name: k})
 	}
 	return
 }
 
-func (statsDir) Lookup(ctx context.Context, req *fuse.LookupRequest, res *fuse.LookupResponse) (fs.Node, error) {
+func (statsDir) Lookup(ctx context.Context, req *fuzeo.LookupRequest, res *fuzeo.LookupResponse) (fs.Node, error) {
 	name := req.Name
 	s, ok := statByName[name]
 	if !ok {
-		return nil, fuse.ENOENT
+		return nil, fuzeo.ENOENT
 	}
 	return s, nil
 }

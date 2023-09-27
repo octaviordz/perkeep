@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2013 The Perkeep Authors
@@ -17,7 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -26,7 +26,7 @@ import (
 	"runtime"
 	"time"
 
-	"bazil.org/fuse"
+	"perkeep.org/pkg/dokanfs/fuzeo"
 )
 
 // Unmount attempts to unmount the provided FUSE mount point, forcibly
@@ -63,8 +63,8 @@ func handleEIOorEINTR(err error) error {
 		return nil
 	}
 	if errors.Is(err, context.Canceled) {
-		return fuse.EINTR
+		return fuzeo.EINTR
 	} else {
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 }

@@ -1,5 +1,6 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
+
 
 /*
 Copyright 2012 The Perkeep Authors
@@ -17,7 +18,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -25,12 +26,12 @@ import (
 	"os"
 	"sync"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
 	"perkeep.org/pkg/blob"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	"perkeep.org/pkg/dokanfs/fuzeo/fs"
 )
 
-// root implements fuse.Node and is the typical root of a
+// root implements fuzeo.Node and is the typical root of a
 // CamliFilesystem with a little hello message and the ability to
 // search and browse static snapshots, etc.
 type root struct {
@@ -49,15 +50,15 @@ var (
 	_ fs.NodeStringLookuper = (*root)(nil)
 )
 
-func (n *root) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *root) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = os.ModeDir | 0700
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
 	return nil
 }
 
-func (n *root) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
-	return []fuse.Dirent{
+func (n *root) ReadDirAll(ctx context.Context) ([]fuzeo.Dirent, error) {
+	return []fuzeo.Dirent{
 		{Name: "WELCOME.txt"},
 		{Name: "tag"},
 		{Name: "date"},
@@ -131,7 +132,7 @@ func (n *root) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		return statsDir{}, nil
 	case "mach_kernel", ".hidden", "._.":
 		// Just quiet some log noise on OS X.
-		return nil, fuse.ENOENT
+		return nil, fuzeo.ENOENT
 	}
 
 	if br, ok := blob.Parse(name); ok {
@@ -139,7 +140,7 @@ func (n *root) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		node := &node{fs: n.fs, blobref: br}
 		if _, err := node.schema(ctx); err != nil {
 			if os.IsNotExist(err) {
-				return nil, fuse.ENOENT
+				return nil, fuzeo.ENOENT
 			} else {
 				return nil, handleEIOorEINTR(err)
 			}
@@ -147,5 +148,5 @@ func (n *root) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		return node, nil
 	}
 	Logger.Printf("Bogus root lookup of %q", name)
-	return nil, fuse.ENOENT
+	return nil, fuzeo.ENOENT
 }

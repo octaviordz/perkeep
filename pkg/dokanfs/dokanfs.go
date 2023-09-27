@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2011 The Perkeep Authors
@@ -19,7 +19,7 @@ limitations under the License.
 
 // Package fs implements a FUSE filesystem for Perkeep and is
 // used by the pk-mount binary.
-package fs // import "perkeep.org/pkg/fs"
+package dokanfs // import "perkeep.org/pkg/dokanfs"
 
 import (
 	"context"
@@ -35,8 +35,8 @@ import (
 	"perkeep.org/pkg/client"
 	"perkeep.org/pkg/schema"
 
-	"bazil.org/fuse"
-	fusefs "bazil.org/fuse/fs"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	fuzeofs "perkeep.org/pkg/dokanfs/fuzeo/fs"
 )
 
 var (
@@ -49,19 +49,19 @@ var (
 type CamliFileSystem struct {
 	fetcher blob.Fetcher
 	client  *client.Client // or nil, if not doing search queries
-	root    fusefs.Node
+	root    fuzeofs.Node
 
 	// IgnoreOwners, if true, collapses all file ownership to the
-	// uid/gid running the fuse filesystem, and sets all the
+	// uid/gid running the fuzeo filesystem, and sets all the
 	// permissions to 0600/0700.
 	IgnoreOwners bool
 
 	blobToSchema *lru.Cache // ~map[blobstring]*schema.Blob
 	nameToBlob   *lru.Cache // ~map[string]blob.Ref
-	nameToAttr   *lru.Cache // ~map[string]*fuse.Attr
+	nameToAttr   *lru.Cache // ~map[string]*fuzeo.Attr
 }
 
-var _ fusefs.FS = (*CamliFileSystem)(nil)
+var _ fuzeofs.FS = (*CamliFileSystem)(nil)
 
 func newCamliFileSystem(fetcher blob.Fetcher) *CamliFileSystem {
 	return &CamliFileSystem{
@@ -101,7 +101,7 @@ func NewRootedCamliFileSystem(cli *client.Client, fetcher blob.Fetcher, root blo
 	return fs, nil
 }
 
-// node implements fuse.Node with a read-only Camli "file" or
+// node implements fuzeo.Node with a read-only Camli "file" or
 // "directory" blob.
 type node struct {
 	fs      *CamliFileSystem
@@ -109,18 +109,18 @@ type node struct {
 
 	pnodeModTime time.Time // optionally set by recent.go; modtime of permanode
 
-	dmu     sync.Mutex    // guards dirents. acquire before mu.
-	dirents []fuse.Dirent // nil until populated once
+	dmu     sync.Mutex     // guards dirents. acquire before mu.
+	dirents []fuzeo.Dirent // nil until populated once
 
 	mu      sync.Mutex // guards rest
-	attr    fuse.Attr
+	attr    fuzeo.Attr
 	meta    *schema.Blob
 	lookMap map[string]blob.Ref
 }
 
-var _ fusefs.Node = (*node)(nil)
+var _ fuzeofs.Node = (*node)(nil)
 
-func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *node) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	if _, err := n.schema(ctx); err != nil {
 		return handleEIOorEINTR(err)
 	}
@@ -137,9 +137,9 @@ func (n *node) addLookupEntry(name string, ref blob.Ref) {
 	n.lookMap[name] = ref
 }
 
-var _ fusefs.NodeStringLookuper = (*node)(nil)
+var _ fuzeofs.NodeStringLookuper = (*node)(nil)
 
-func (n *node) Lookup(ctx context.Context, name string) (fusefs.Node, error) {
+func (n *node) Lookup(ctx context.Context, name string) (fuzeofs.Node, error) {
 	if name == ".quitquitquit" {
 		// TODO: only in dev mode
 		log.Fatalf("Shutting down due to .quitquitquit lookup.")
@@ -158,7 +158,7 @@ func (n *node) Lookup(ctx context.Context, name string) (fusefs.Node, error) {
 	defer n.mu.Unlock()
 	ref, ok := n.lookMap[name]
 	if !ok {
-		return nil, fuse.ENOENT
+		return nil, fuzeo.ENOENT
 	}
 	return &node{fs: n.fs, blobref: ref}, nil
 }
@@ -177,17 +177,17 @@ func (n *node) schema(ctx context.Context) (*schema.Blob, error) {
 	return blob, err
 }
 
-func isWriteFlags(flags fuse.OpenFlags) bool {
+func isWriteFlags(flags fuzeo.OpenFlags) bool {
 	// TODO read/writeness are not flags, use O_ACCMODE
-	return flags&fuse.OpenFlags(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE) != 0
+	return flags&fuzeo.OpenFlags(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE) != 0
 }
 
-var _ fusefs.NodeOpener = (*node)(nil)
+var _ fuzeofs.NodeOpener = (*node)(nil)
 
-func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.OpenResponse) (fusefs.Handle, error) {
+func (n *node) Open(ctx context.Context, req *fuzeo.OpenRequest, res *fuzeo.OpenResponse) (fuzeofs.Handle, error) {
 	Logger.Printf("CAMLI Open on %v: %#v", n.blobref, req)
 	if isWriteFlags(req.Flags) {
-		return nil, fuse.EPERM
+		return nil, fuzeo.EPERM
 	}
 	ss, err := n.schema(ctx)
 	if err != nil {
@@ -201,7 +201,7 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.OpenRe
 	if err != nil {
 		// Will only happen if ss.Type != "file" or "bytes"
 		Logger.Printf("NewFileReader(%s) = %v", n.blobref, err)
-		return nil, fuse.EIO
+		return nil, fuzeo.EIO
 	}
 	return &nodeReader{n: n, fr: fr}, nil
 }
@@ -211,9 +211,9 @@ type nodeReader struct {
 	fr *schema.FileReader
 }
 
-var _ fusefs.HandleReader = (*nodeReader)(nil)
+var _ fuzeofs.HandleReader = (*nodeReader)(nil)
 
-func (nr *nodeReader) Read(ctx context.Context, req *fuse.ReadRequest, res *fuse.ReadResponse) error {
+func (nr *nodeReader) Read(ctx context.Context, req *fuzeo.ReadRequest, res *fuzeo.ReadResponse) error {
 	Logger.Printf("CAMLI nodeReader READ on %v: %#v", nr.n.blobref, req)
 	if req.Offset >= nr.fr.Size() {
 		return nil
@@ -229,23 +229,23 @@ func (nr *nodeReader) Read(ctx context.Context, req *fuse.ReadRequest, res *fuse
 	}
 	if err != nil {
 		Logger.Printf("camli read on %v at %d: %v", nr.n.blobref, req.Offset, err)
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 	res.Data = buf[:n]
 	return nil
 }
 
-var _ fusefs.HandleReleaser = (*nodeReader)(nil)
+var _ fuzeofs.HandleReleaser = (*nodeReader)(nil)
 
-func (nr *nodeReader) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
+func (nr *nodeReader) Release(ctx context.Context, req *fuzeo.ReleaseRequest) error {
 	Logger.Printf("CAMLI nodeReader RELEASE on %v", nr.n.blobref)
 	nr.fr.Close()
 	return nil
 }
 
-var _ fusefs.HandleReadDirAller = (*node)(nil)
+var _ fuzeofs.HandleReadDirAller = (*node)(nil)
 
-func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+func (n *node) ReadDirAll(ctx context.Context) ([]fuzeo.Dirent, error) {
 	Logger.Printf("CAMLI ReadDirAll on %v", n.blobref)
 	n.dmu.Lock()
 	defer n.dmu.Unlock()
@@ -268,11 +268,11 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		Logger.Printf("camli.ReadDirAll error on %v: %v", n.blobref, err)
 		return nil, handleEIOorEINTR(err)
 	}
-	n.dirents = make([]fuse.Dirent, 0)
+	n.dirents = make([]fuzeo.Dirent, 0)
 	for _, sent := range schemaEnts {
 		if name := sent.FileName(); name != "" {
 			n.addLookupEntry(name, sent.BlobRef())
-			n.dirents = append(n.dirents, fuse.Dirent{Name: name})
+			n.dirents = append(n.dirents, fuzeo.Dirent{Name: name})
 		}
 	}
 	return n.dirents, nil
@@ -318,13 +318,13 @@ func (n *node) populateAttr() error {
 	return nil
 }
 
-func (fs *CamliFileSystem) Root() (fusefs.Node, error) {
+func (fs *CamliFileSystem) Root() (fuzeofs.Node, error) {
 	return fs.root, nil
 }
 
-var _ fusefs.FSStatfser = (*CamliFileSystem)(nil)
+var _ fuzeofs.FSStatfser = (*CamliFileSystem)(nil)
 
-func (fs *CamliFileSystem) Statfs(ctx context.Context, req *fuse.StatfsRequest, res *fuse.StatfsResponse) error {
+func (fs *CamliFileSystem) Statfs(ctx context.Context, req *fuzeo.StatfsRequest, res *fuzeo.StatfsResponse) error {
 	// Make some stuff up, just to see if it makes "lsof" happy.
 	res.Blocks = 1 << 35
 	res.Bfree = 1 << 34
@@ -365,7 +365,7 @@ func (fs *CamliFileSystem) fetchSchemaMeta(ctx context.Context, br blob.Ref) (*s
 }
 
 // consolated logic for determining a node to mount based on an arbitrary blobref
-func (fs *CamliFileSystem) newNodeFromBlobRef(root blob.Ref) (fusefs.Node, error) {
+func (fs *CamliFileSystem) newNodeFromBlobRef(root blob.Ref) (fuzeofs.Node, error) {
 	blob, err := fs.fetchSchemaMeta(context.TODO(), root)
 	if err != nil {
 		return nil, err
@@ -387,9 +387,9 @@ func (fs *CamliFileSystem) newNodeFromBlobRef(root blob.Ref) (fusefs.Node, error
 
 type notImplementDirNode struct{}
 
-var _ fusefs.Node = (*notImplementDirNode)(nil)
+var _ fuzeofs.Node = (*notImplementDirNode)(nil)
 
-func (notImplementDirNode) Attr(ctx context.Context, a *fuse.Attr) error {
+func (notImplementDirNode) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = os.ModeDir | 0000
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
@@ -398,22 +398,22 @@ func (notImplementDirNode) Attr(ctx context.Context, a *fuse.Attr) error {
 
 type staticFileNode string
 
-var _ fusefs.Node = (*notImplementDirNode)(nil)
+var _ fuzeofs.Node = (*notImplementDirNode)(nil)
 
-func (s staticFileNode) Attr(ctx context.Context, a *fuse.Attr) error {
+func (s staticFileNode) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = 0400
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
 	a.Size = uint64(len(s))
 	a.Mtime = serverStart
 	a.Ctime = serverStart
-	a.Crtime = serverStart
+	// a.Crtime = serverStart
 	return nil
 }
 
-var _ fusefs.HandleReader = (*staticFileNode)(nil)
+var _ fuzeofs.HandleReader = (*staticFileNode)(nil)
 
-func (s staticFileNode) Read(ctx context.Context, req *fuse.ReadRequest, res *fuse.ReadResponse) error {
+func (s staticFileNode) Read(ctx context.Context, req *fuzeo.ReadRequest, res *fuzeo.ReadResponse) error {
 	if req.Offset > int64(len(s)) {
 		return nil
 	}

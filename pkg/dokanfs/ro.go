@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2013 The Perkeep Authors
@@ -17,7 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -29,10 +29,10 @@ import (
 	"sync"
 	"time"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
 	"go4.org/types"
 	"perkeep.org/pkg/blob"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	"perkeep.org/pkg/dokanfs/fuzeo/fs"
 	"perkeep.org/pkg/schema"
 	"perkeep.org/pkg/search"
 )
@@ -73,8 +73,8 @@ func (n *roDir) fullPath() string {
 	return filepath.Join(n.parent.fullPath(), n.name)
 }
 
-func (n *roDir) Attr(ctx context.Context, a *fuse.Attr) error {
-	*a = fuse.Attr{
+func (n *roDir) Attr(ctx context.Context, a *fuzeo.Attr) error {
+	*a = fuzeo.Attr{
 		Inode: n.permanode.Sum64(),
 		Mode:  os.ModeDir | 0500,
 		Uid:   uint32(os.Getuid()),
@@ -170,14 +170,14 @@ func (n *roDir) populate(ctx context.Context) error {
 	return nil
 }
 
-func (n *roDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+func (n *roDir) ReadDirAll(ctx context.Context) ([]fuzeo.Dirent, error) {
 	if err := n.populate(ctx); err != nil {
 		Logger.Println("populate:", err)
 		return nil, handleEIOorEINTR(err)
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	var ents []fuse.Dirent
+	var ents []fuzeo.Dirent
 	for name, childNode := range n.children {
 		var ino uint64
 		switch v := childNode.(type) {
@@ -190,8 +190,8 @@ func (n *roDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		}
 
 		// TODO: figure out what Dirent.Type means.
-		// fuse.go says "Type uint32 // ?"
-		dirent := fuse.Dirent{
+		// fuzeo.go says "Type uint32 // ?"
+		dirent := fuzeo.Dirent{
 			Name:  name,
 			Inode: ino,
 		}
@@ -216,7 +216,7 @@ func (n *roDir) Lookup(ctx context.Context, name string) (ret fs.Node, err error
 	if n2 := n.children[name]; n2 != nil {
 		return n2, nil
 	}
-	return nil, fuse.ENOENT
+	return nil, fuzeo.ENOENT
 }
 
 // roFile is a read-only file, or symlink.
@@ -244,28 +244,28 @@ var _ fs.NodeOpener = (*roFile)(nil)
 var _ fs.NodeFsyncer = (*roFile)(nil)
 var _ fs.NodeReadlinker = (*roFile)(nil)
 
-func (n *roDir) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, res *fuse.GetxattrResponse) error {
+func (n *roDir) Getxattr(ctx context.Context, req *fuzeo.GetxattrRequest, res *fuzeo.GetxattrResponse) error {
 	return n.xattr().get(req, res)
 }
 
-func (n *roDir) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, res *fuse.ListxattrResponse) error {
+func (n *roDir) Listxattr(ctx context.Context, req *fuzeo.ListxattrRequest, res *fuzeo.ListxattrResponse) error {
 	return n.xattr().list(req, res)
 }
 
-func (n *roFile) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, res *fuse.GetxattrResponse) error {
+func (n *roFile) Getxattr(ctx context.Context, req *fuzeo.GetxattrRequest, res *fuzeo.GetxattrResponse) error {
 	return n.xattr().get(req, res)
 }
 
-func (n *roFile) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, res *fuse.ListxattrResponse) error {
+func (n *roFile) Listxattr(ctx context.Context, req *fuzeo.ListxattrRequest, res *fuzeo.ListxattrResponse) error {
 	return n.xattr().list(req, res)
 }
 
-func (n *roFile) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) error {
-	return fuse.EPERM
+func (n *roFile) Removexattr(ctx context.Context, req *fuzeo.RemovexattrRequest) error {
+	return fuzeo.EPERM
 }
 
-func (n *roFile) Setxattr(ctx context.Context, req *fuse.SetxattrRequest) error {
-	return fuse.EPERM
+func (n *roFile) Setxattr(ctx context.Context, req *fuzeo.SetxattrRequest) error {
+	return fuzeo.EPERM
 }
 
 // for debugging
@@ -276,7 +276,7 @@ func (n *roFile) fullPath() string {
 	return filepath.Join(n.parent.fullPath(), n.name)
 }
 
-func (n *roFile) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *roFile) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	// TODO: don't grab n.mu three+ times in here.
 	var mode os.FileMode = 0400 // read-only
 
@@ -292,7 +292,7 @@ func (n *roFile) Attr(ctx context.Context, a *fuse.Attr) error {
 	}
 	n.mu.Unlock()
 
-	*a = fuse.Attr{
+	*a = fuzeo.Attr{
 		Inode:  inode,
 		Mode:   mode,
 		Uid:    uint32(os.Getuid()),
@@ -302,7 +302,7 @@ func (n *roFile) Attr(ctx context.Context, a *fuse.Attr) error {
 		Mtime:  n.modTime(),
 		Atime:  n.accessTime(),
 		Ctime:  serverStart,
-		Crtime: serverStart,
+		// Crtime: serverStart,
 	}
 	return nil
 }
@@ -336,11 +336,11 @@ func (n *roFile) modTime() time.Time {
 // open flags are O_WRONLY (1), O_RDONLY (0), or O_RDWR (2). and also
 // bitmaks of O_SYMLINK (0x200000) maybe. (from
 // fuse_filehandle_xlate_to_oflags in macosx/kext/fuse_file.h)
-func (n *roFile) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.OpenResponse) (fs.Handle, error) {
+func (n *roFile) Open(ctx context.Context, req *fuzeo.OpenRequest, res *fuzeo.OpenResponse) (fs.Handle, error) {
 	roFileOpen.Incr()
 
 	if isWriteFlags(req.Flags) {
-		return nil, fuse.EPERM
+		return nil, fuzeo.EPERM
 	}
 
 	Logger.Printf("roFile.Open: %v: content: %v dir=%v flags=%v", n.permanode, n.content, req.Dir, req.Flags)
@@ -351,9 +351,9 @@ func (n *roFile) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.Open
 		return nil, handleEIOorEINTR(err)
 	}
 
-	// Turn off the OpenDirectIO bit (on by default in rsc fuse server.go),
+	// Turn off the OpenDirectIO bit (on by default in rsc fuzeo server.go),
 	// else append operations don't work for some reason.
-	res.Flags &= ^fuse.OpenDirectIO
+	res.Flags &= ^fuzeo.OpenDirectIO
 
 	// Read-only.
 	nod := &node{
@@ -363,18 +363,18 @@ func (n *roFile) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.Open
 	return &nodeReader{n: nod, fr: r}, nil
 }
 
-func (n *roFile) Fsync(ctx context.Context, r *fuse.FsyncRequest) error {
+func (n *roFile) Fsync(ctx context.Context, r *fuzeo.FsyncRequest) error {
 	// noop
 	return nil
 }
 
-func (n *roFile) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
+func (n *roFile) Readlink(ctx context.Context, req *fuzeo.ReadlinkRequest) (string, error) {
 	Logger.Printf("roFile.Readlink(%q)", n.fullPath())
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !n.symLink {
 		Logger.Printf("roFile.Readlink on node that's not a symlink?")
-		return "", fuse.EIO
+		return "", fuzeo.EIO
 	}
 	return n.target, nil
 }

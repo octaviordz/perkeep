@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2012 The Perkeep Authors
@@ -17,14 +17,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
 	"os"
 
-	"bazil.org/fuse"
-	fusefs "bazil.org/fuse/fs"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	fuzeofs "perkeep.org/pkg/dokanfs/fuzeo/fs"
 )
 
 type atDir struct {
@@ -32,20 +32,20 @@ type atDir struct {
 }
 
 var (
-	_ fusefs.Node               = (*atDir)(nil)
-	_ fusefs.HandleReadDirAller = (*atDir)(nil)
-	_ fusefs.NodeStringLookuper = (*atDir)(nil)
+	_ fuzeofs.Node               = (*atDir)(nil)
+	_ fuzeofs.HandleReadDirAller = (*atDir)(nil)
+	_ fuzeofs.NodeStringLookuper = (*atDir)(nil)
 )
 
-func (n *atDir) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *atDir) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = os.ModeDir | 0500
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
 	return nil
 }
 
-func (n *atDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
-	return []fuse.Dirent{
+func (n *atDir) ReadDirAll(ctx context.Context) ([]fuzeo.Dirent, error) {
+	return []fuzeo.Dirent{
 		{Name: "README.txt"},
 	}, nil
 }
@@ -101,7 +101,7 @@ With More Coarse Granularities
 * 2012             (This will be considered the same as 2012-01-01T00:00:00Z)
 `
 
-func (n *atDir) Lookup(ctx context.Context, name string) (fusefs.Node, error) {
+func (n *atDir) Lookup(ctx context.Context, name string) (fuzeofs.Node, error) {
 	Logger.Printf("fs.atDir: Lookup(%q)", name)
 
 	if name == "README.txt" {
@@ -111,7 +111,7 @@ func (n *atDir) Lookup(ctx context.Context, name string) (fusefs.Node, error) {
 	asOf, err := parseTime(name)
 	if err != nil {
 		Logger.Printf("Can't parse time: %v", err)
-		return nil, fuse.ENOENT
+		return nil, fuzeo.ENOENT
 	}
 
 	return &rootsDir{fs: n.fs, at: asOf}, nil

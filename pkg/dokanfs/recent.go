@@ -1,5 +1,6 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
+
 
 /*
 Copyright 2013 The Perkeep Authors
@@ -17,7 +18,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -30,11 +31,11 @@ import (
 	"perkeep.org/pkg/blob"
 	"perkeep.org/pkg/search"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	"perkeep.org/pkg/dokanfs/fuzeo/fs"
 )
 
-// recentDir implements fuse.Node and is a directory of recent
+// recentDir implements fuzeo.Node and is a directory of recent
 // permanodes' files, for permanodes with a camliContent pointing to a
 // "file".
 type recentDir struct {
@@ -53,7 +54,7 @@ var (
 	_ fs.NodeStringLookuper = (*recentDir)(nil)
 )
 
-func (n *recentDir) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *recentDir) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = os.ModeDir | 0500
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
@@ -62,15 +63,15 @@ func (n *recentDir) Attr(ctx context.Context, a *fuse.Attr) error {
 
 const recentSearchInterval = 10 * time.Second
 
-func (n *recentDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
-	var ents []fuse.Dirent
+func (n *recentDir) ReadDirAll(ctx context.Context) ([]fuzeo.Dirent, error) {
+	var ents []fuzeo.Dirent
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.lastReaddir.After(time.Now().Add(-recentSearchInterval)) {
 		Logger.Printf("fs.recent: ReadDirAll from cache")
 		for _, name := range n.lastNames {
-			ents = append(ents, fuse.Dirent{Name: name})
+			ents = append(ents, fuzeo.Dirent{Name: name})
 		}
 		return ents, nil
 	}
@@ -128,7 +129,7 @@ func (n *recentDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		n.modTime[name] = modTime
 		Logger.Printf("fs.recent: name %q = %v (at %v -> %v)", name, ccMeta.BlobRef, ri.ModTime.Time(), modTime)
 		n.lastNames = append(n.lastNames, name)
-		ents = append(ents, fuse.Dirent{
+		ents = append(ents, fuzeo.Dirent{
 			Name: name,
 		})
 	}
@@ -157,7 +158,7 @@ func (n *recentDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	db := n.ents[name]
 	Logger.Printf("fs.recent: Lookup(%q) = %v", name, db)
 	if db == nil {
-		return nil, fuse.ENOENT
+		return nil, fuzeo.ENOENT
 	}
 	nod := &node{
 		fs:           n.fs,

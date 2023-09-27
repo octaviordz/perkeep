@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2012 The Perkeep Authors
@@ -17,7 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -26,10 +26,10 @@ import (
 	"sync"
 	"time"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
 	"go4.org/syncutil"
 	"perkeep.org/pkg/blob"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	"perkeep.org/pkg/dokanfs/fuzeo/fs"
 	"perkeep.org/pkg/schema"
 	"perkeep.org/pkg/search"
 )
@@ -66,30 +66,30 @@ func (n *rootsDir) dirMode() os.FileMode {
 	return 0700
 }
 
-func (n *rootsDir) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *rootsDir) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Mode = os.ModeDir | n.dirMode()
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())
 	return nil
 }
 
-func (n *rootsDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+func (n *rootsDir) ReadDirAll(ctx context.Context) ([]fuzeo.Dirent, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := n.condRefresh(ctx); err != nil {
 		return nil, handleEIOorEINTR(err)
 	}
-	var ents []fuse.Dirent
+	var ents []fuzeo.Dirent
 	for name := range n.m {
-		ents = append(ents, fuse.Dirent{Name: name})
+		ents = append(ents, fuzeo.Dirent{Name: name})
 	}
 	Logger.Printf("rootsDir.ReadDirAll() -> %v", ents)
 	return ents, nil
 }
 
-func (n *rootsDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+func (n *rootsDir) Remove(ctx context.Context, req *fuzeo.RemoveRequest) error {
 	if n.isRO() {
-		return fuse.EPERM
+		return fuzeo.EPERM
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -99,7 +99,7 @@ func (n *rootsDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	}
 	br := n.m[req.Name]
 	if !br.Valid() {
-		return fuse.ENOENT
+		return fuzeo.ENOENT
 	}
 
 	claim := schema.NewDelAttributeClaim(br, "camliRoot", "")
@@ -115,10 +115,10 @@ func (n *rootsDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	return nil
 }
 
-func (n *rootsDir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) error {
+func (n *rootsDir) Rename(ctx context.Context, req *fuzeo.RenameRequest, newDir fs.Node) error {
 	Logger.Printf("rootsDir.Rename %q -> %q", req.OldName, req.NewName)
 	if n.isRO() {
-		return fuse.EPERM
+		return fuzeo.EPERM
 	}
 
 	n.mu.Lock()
@@ -127,11 +127,11 @@ func (n *rootsDir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir f
 	n.mu.Unlock()
 	if !exists {
 		Logger.Printf("*rootsDir.Rename src name %q isn't known", req.OldName)
-		return fuse.ENOENT
+		return fuzeo.ENOENT
 	}
 	if collision {
 		Logger.Printf("*rootsDir.Rename dest %q already exists", req.NewName)
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 
 	// Don't allow renames if the root contains content.  Rename
@@ -145,14 +145,14 @@ func (n *rootsDir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir f
 	db := res.Meta[target.String()]
 	if db == nil {
 		Logger.Printf("Failed to pull meta for target: %v", target)
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 
 	for k := range db.Permanode.Attr {
 		const p = "camliPath:"
 		if strings.HasPrefix(k, p) {
 			Logger.Printf("Found file in %q: %q, disallowing rename", req.OldName, k[len(p):])
-			return fuse.EIO
+			return fuzeo.EIO
 		}
 	}
 
@@ -190,7 +190,7 @@ func (n *rootsDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	}
 	br := n.m[name]
 	if !br.Valid() {
-		return nil, fuse.ENOENT
+		return nil, fuzeo.ENOENT
 	}
 
 	nod, ok := n.children[name]
@@ -301,9 +301,9 @@ func (n *rootsDir) condRefresh(ctx context.Context) error {
 	return nil
 }
 
-func (n *rootsDir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
+func (n *rootsDir) Mkdir(ctx context.Context, req *fuzeo.MkdirRequest) (fs.Node, error) {
 	if n.isRO() {
-		return nil, fuse.EPERM
+		return nil, fuzeo.EPERM
 	}
 
 	name := req.Name

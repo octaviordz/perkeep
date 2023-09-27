@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2013 The Perkeep Authors
@@ -17,7 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -34,9 +34,9 @@ import (
 	"perkeep.org/pkg/schema"
 	"perkeep.org/pkg/search"
 
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
 	"go4.org/syncutil"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	"perkeep.org/pkg/dokanfs/fuzeo/fs"
 )
 
 // How often to refresh directory nodes by reading from the blobstore.
@@ -96,7 +96,7 @@ func (n *mutDir) fullPath() string {
 	return filepath.Join(n.parent.fullPath(), n.name)
 }
 
-func (n *mutDir) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *mutDir) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	a.Inode = n.permanode.Sum64()
 	a.Mode = os.ModeDir | 0700
 	a.Uid = uint32(os.Getuid())
@@ -104,20 +104,20 @@ func (n *mutDir) Attr(ctx context.Context, a *fuse.Attr) error {
 	return nil
 }
 
-func (n *mutDir) Access(ctx context.Context, req *fuse.AccessRequest) error {
+func (n *mutDir) Access(ctx context.Context, req *fuzeo.AccessRequest) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.deleted {
-		return fuse.ENOENT
+		return fuzeo.ENOENT
 	}
 	return nil
 }
 
-func (n *mutFile) Access(ctx context.Context, req *fuse.AccessRequest) error {
+func (n *mutFile) Access(ctx context.Context, req *fuzeo.AccessRequest) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.deleted {
-		return fuse.ENOENT
+		return fuzeo.ENOENT
 	}
 	return nil
 }
@@ -249,14 +249,14 @@ func isDir(d *search.DescribedPermanode) bool {
 	return false
 }
 
-func (n *mutDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+func (n *mutDir) ReadDirAll(ctx context.Context) ([]fuzeo.Dirent, error) {
 	if err := n.populate(ctx); err != nil {
 		Logger.Println("populate:", err)
 		return nil, handleEIOorEINTR(err)
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	var ents []fuse.Dirent
+	var ents []fuzeo.Dirent
 	for name, childNode := range n.children {
 		var ino uint64
 		switch v := childNode.(type) {
@@ -269,8 +269,8 @@ func (n *mutDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		}
 
 		// TODO: figure out what Dirent.Type means.
-		// fuse.go says "Type uint32 // ?"
-		dirent := fuse.Dirent{
+		// fuzeo.go says "Type uint32 // ?"
+		dirent := fuzeo.Dirent{
 			Name:  name,
 			Inode: ino,
 		}
@@ -293,7 +293,7 @@ func (n *mutDir) Lookup(ctx context.Context, name string) (ret fs.Node, err erro
 	if n2 := n.children[name]; n2 != nil {
 		return n2, nil
 	}
-	return nil, fuse.ENOENT
+	return nil, fuzeo.ENOENT
 }
 
 // Create of regular file. (not a dir)
@@ -304,9 +304,9 @@ func (n *mutDir) Lookup(ctx context.Context, name string) (ret fs.Node, err erro
 //	/* XXX: We /always/ creat() like this. Wish we were on Linux. */
 //	foi->flags = O_CREAT | O_RDWR;
 //
-// 2013/07/21 05:26:35 <- &{Create [ID=0x3 Node=0x8 Uid=61652 Gid=5000 Pid=13115] "x" fl=514 mode=-rw-r--r-- fuse.Intr}
+// 2013/07/21 05:26:35 <- &{Create [ID=0x3 Node=0x8 Uid=61652 Gid=5000 Pid=13115] "x" fl=514 mode=-rw-r--r-- fuzeo.Intr}
 // 2013/07/21 05:26:36 -> 0x3 Create {LookupResponse:{Node:23 Generation:0 EntryValid:1m0s AttrValid:1m0s Attr:{Inode:15976986887557313215 Size:0 Blocks:0 Atime:2013-07-21 05:23:51.537251251 +1200 NZST Mtime:2013-07-21 05:23:51.537251251 +1200 NZST Ctime:2013-07-21 05:23:51.537251251 +1200 NZST Crtime:2013-07-21 05:23:51.537251251 +1200 NZST Mode:-rw------- Nlink:1 Uid:61652 Gid:5000 Rdev:0 Flags:0}} OpenResponse:{Handle:1 Flags:0}}
-func (n *mutDir) Create(ctx context.Context, req *fuse.CreateRequest, res *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
+func (n *mutDir) Create(ctx context.Context, req *fuzeo.CreateRequest, res *fuzeo.CreateResponse) (fs.Node, fs.Handle, error) {
 	child, err := n.creat(ctx, req.Name, fileType)
 	if err != nil {
 		Logger.Printf("mutDir.Create(%q): %v", req.Name, err)
@@ -322,7 +322,7 @@ func (n *mutDir) Create(ctx context.Context, req *fuse.CreateRequest, res *fuse.
 	return child, h, nil
 }
 
-func (n *mutDir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
+func (n *mutDir) Mkdir(ctx context.Context, req *fuzeo.MkdirRequest) (fs.Node, error) {
 	child, err := n.creat(ctx, req.Name, dirType)
 	if err != nil {
 		Logger.Printf("mutDir.Mkdir(%q): %v", req.Name, err)
@@ -331,8 +331,8 @@ func (n *mutDir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, er
 	return child, nil
 }
 
-// &fuse.SymlinkRequest{Header:fuse.Header{Conn:(*fuse.Conn)(0xc210047180), ID:0x4, Node:0x8, Uid:0xf0d4, Gid:0x1388, Pid:0x7e88}, NewName:"some-link", Target:"../../some-target"}
-func (n *mutDir) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (fs.Node, error) {
+// &fuzeo.SymlinkRequest{Header:fuzeo.Header{Conn:(*fuzeo.Conn)(0xc210047180), ID:0x4, Node:0x8, Uid:0xf0d4, Gid:0x1388, Pid:0x7e88}, NewName:"some-link", Target:"../../some-target"}
+func (n *mutDir) Symlink(ctx context.Context, req *fuzeo.SymlinkRequest) (fs.Node, error) {
 	node, err := n.creat(ctx, req.NewName, symlinkType)
 	if err != nil {
 		Logger.Printf("mutDir.Symlink(%q): %v", req.NewName, err)
@@ -429,7 +429,7 @@ func (n *mutDir) creat(ctx context.Context, name string, typ nodeType) (fs.Node,
 	return child, nil
 }
 
-func (n *mutDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+func (n *mutDir) Remove(ctx context.Context, req *fuzeo.RemoveRequest) error {
 	// Remove the camliPath:name attribute from the directory permanode.
 	claim := schema.NewDelAttributeClaim(n.permanode, "camliPath:"+req.Name, "")
 	_, err := n.fs.client.UploadAndSignBlob(ctx, claim)
@@ -450,12 +450,12 @@ func (n *mutDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	return nil
 }
 
-// &RenameRequest{Header:fuse.Header{Conn:(*fuse.Conn)(0xc210048180), ID:0x2, Node:0x8, Uid:0xf0d4, Gid:0x1388, Pid:0x5edb}, NewDir:0x8, OldName:"1", NewName:"2"}
-func (n *mutDir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) error {
+// &RenameRequest{Header:fuzeo.Header{Conn:(*fuzeo.Conn)(0xc210048180), ID:0x2, Node:0x8, Uid:0xf0d4, Gid:0x1388, Pid:0x5edb}, NewDir:0x8, OldName:"1", NewName:"2"}
+func (n *mutDir) Rename(ctx context.Context, req *fuzeo.RenameRequest, newDir fs.Node) error {
 	n2, ok := newDir.(*mutDir)
 	if !ok {
 		Logger.Printf("*mutDir newDir node isn't a *mutDir; is a %T; can't handle. returning EIO.", newDir)
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 
 	var wg syncutil.Group
@@ -471,7 +471,7 @@ func (n *mutDir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.
 	n.mu.Unlock()
 	if !ok {
 		Logger.Printf("*mutDir.Rename src name %q isn't known", req.OldName)
-		return fuse.ENOENT
+		return fuzeo.ENOENT
 	}
 
 	now := time.Now()
@@ -575,39 +575,39 @@ func (n *mutDir) xattr() *xattr {
 	return &xattr{"mutDir", n.fs, n.permanode, &n.mu, &n.xattrs}
 }
 
-func (n *mutDir) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) error {
+func (n *mutDir) Removexattr(ctx context.Context, req *fuzeo.RemovexattrRequest) error {
 	return n.xattr().remove(ctx, req)
 }
 
-func (n *mutDir) Setxattr(ctx context.Context, req *fuse.SetxattrRequest) error {
+func (n *mutDir) Setxattr(ctx context.Context, req *fuzeo.SetxattrRequest) error {
 	return n.xattr().set(ctx, req)
 }
 
-func (n *mutDir) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, res *fuse.GetxattrResponse) error {
+func (n *mutDir) Getxattr(ctx context.Context, req *fuzeo.GetxattrRequest, res *fuzeo.GetxattrResponse) error {
 	return n.xattr().get(req, res)
 }
 
-func (n *mutDir) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, res *fuse.ListxattrResponse) error {
+func (n *mutDir) Listxattr(ctx context.Context, req *fuzeo.ListxattrRequest, res *fuzeo.ListxattrResponse) error {
 	return n.xattr().list(req, res)
 }
 
-func (n *mutFile) Getxattr(ctx context.Context, req *fuse.GetxattrRequest, res *fuse.GetxattrResponse) error {
+func (n *mutFile) Getxattr(ctx context.Context, req *fuzeo.GetxattrRequest, res *fuzeo.GetxattrResponse) error {
 	return n.xattr().get(req, res)
 }
 
-func (n *mutFile) Listxattr(ctx context.Context, req *fuse.ListxattrRequest, res *fuse.ListxattrResponse) error {
+func (n *mutFile) Listxattr(ctx context.Context, req *fuzeo.ListxattrRequest, res *fuzeo.ListxattrResponse) error {
 	return n.xattr().list(req, res)
 }
 
-func (n *mutFile) Removexattr(ctx context.Context, req *fuse.RemovexattrRequest) error {
+func (n *mutFile) Removexattr(ctx context.Context, req *fuzeo.RemovexattrRequest) error {
 	return n.xattr().remove(ctx, req)
 }
 
-func (n *mutFile) Setxattr(ctx context.Context, req *fuse.SetxattrRequest) error {
+func (n *mutFile) Setxattr(ctx context.Context, req *fuzeo.SetxattrRequest) error {
 	return n.xattr().set(ctx, req)
 }
 
-func (n *mutFile) Attr(ctx context.Context, a *fuse.Attr) error {
+func (n *mutFile) Attr(ctx context.Context, a *fuzeo.Attr) error {
 	// TODO: don't grab n.mu three+ times in here.
 	var mode os.FileMode = 0600 // writable
 
@@ -632,7 +632,7 @@ func (n *mutFile) Attr(ctx context.Context, a *fuse.Attr) error {
 	a.Mtime = n.modTime()
 	a.Atime = n.accessTime()
 	a.Ctime = serverStart
-	a.Crtime = serverStart
+	// a.Crtime = serverStart
 	return nil
 }
 
@@ -665,7 +665,7 @@ func (n *mutFile) modTime() time.Time {
 // open flags are O_WRONLY (1), O_RDONLY (0), or O_RDWR (2). and also
 // bitmaks of O_SYMLINK (0x200000) maybe. (from
 // fuse_filehandle_xlate_to_oflags in macosx/kext/fuse_file.h)
-func (n *mutFile) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.OpenResponse) (fs.Handle, error) {
+func (n *mutFile) Open(ctx context.Context, req *fuzeo.OpenRequest, res *fuzeo.OpenResponse) (fs.Handle, error) {
 	mutFileOpen.Incr()
 
 	Logger.Printf("mutFile.Open: %v: content: %v dir=%v flags=%v", n.permanode, n.content, req.Dir, req.Flags)
@@ -694,26 +694,26 @@ func (n *mutFile) Open(ctx context.Context, req *fuse.OpenRequest, res *fuse.Ope
 	return n.newHandle(r)
 }
 
-func (n *mutFile) Fsync(ctx context.Context, r *fuse.FsyncRequest) error {
-	// TODO(adg): in the fuse package, plumb through fsync to mutFileHandle
+func (n *mutFile) Fsync(ctx context.Context, r *fuzeo.FsyncRequest) error {
+	// TODO(adg): in the fuzeo package, plumb through fsync to mutFileHandle
 	// in the same way we did Truncate.
 	Logger.Printf("mutFile.Fsync: TODO")
 	return nil
 }
 
-func (n *mutFile) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
+func (n *mutFile) Readlink(ctx context.Context, req *fuzeo.ReadlinkRequest) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !n.symLink {
 		Logger.Printf("mutFile.Readlink on node that's not a symlink?")
-		return "", fuse.EIO
+		return "", fuzeo.EIO
 	}
 	return n.target, nil
 }
 
-func (n *mutFile) Setattr(ctx context.Context, req *fuse.SetattrRequest, res *fuse.SetattrResponse) error {
+func (n *mutFile) Setattr(ctx context.Context, req *fuzeo.SetattrRequest, res *fuzeo.SetattrResponse) error {
 	Logger.Printf("mutFile.Setattr on %q: %#v", n.fullPath(), req)
-	// 2013/07/17 19:43:41 mutFile.Setattr on "foo": &fuse.SetattrRequest{Header:fuse.Header{Conn:(*fuse.Conn)(0xc210047180), ID:0x3, Node:0x3d, Uid:0xf0d4, Gid:0x1388, Pid:0x75e8}, Valid:0x30, Handle:0x0, Size:0x0, Atime:time.Time{sec:63509651021, nsec:0x4aec6b8, loc:(*time.Location)(0x47f7600)}, Mtime:time.Time{sec:63509651021, nsec:0x4aec6b8, loc:(*time.Location)(0x47f7600)}, Mode:0x4000000, Uid:0x0, Gid:0x0, Bkuptime:time.Time{sec:62135596800, nsec:0x0, loc:(*time.Location)(0x47f7600)}, Chgtime:time.Time{sec:62135596800, nsec:0x0, loc:(*time.Location)(0x47f7600)}, Crtime:time.Time{sec:0, nsec:0x0, loc:(*time.Location)(nil)}, Flags:0x0}
+	// 2013/07/17 19:43:41 mutFile.Setattr on "foo": &fuzeo.SetattrRequest{Header:fuzeo.Header{Conn:(*fuzeo.Conn)(0xc210047180), ID:0x3, Node:0x3d, Uid:0xf0d4, Gid:0x1388, Pid:0x75e8}, Valid:0x30, Handle:0x0, Size:0x0, Atime:time.Time{sec:63509651021, nsec:0x4aec6b8, loc:(*time.Location)(0x47f7600)}, Mtime:time.Time{sec:63509651021, nsec:0x4aec6b8, loc:(*time.Location)(0x47f7600)}, Mode:0x4000000, Uid:0x0, Gid:0x0, Bkuptime:time.Time{sec:62135596800, nsec:0x0, loc:(*time.Location)(0x47f7600)}, Chgtime:time.Time{sec:62135596800, nsec:0x0, loc:(*time.Location)(0x47f7600)}, Crtime:time.Time{sec:0, nsec:0x0, loc:(*time.Location)(nil)}, Flags:0x0}
 
 	n.mu.Lock()
 	if req.Valid.Mtime() {
@@ -742,7 +742,7 @@ func (n *mutFile) newHandle(body io.Reader) (fs.Handle, error) {
 			tmp.Close()
 			os.Remove(tmp.Name())
 		}
-		return nil, fuse.EIO
+		return nil, fuzeo.EIO
 	}
 	return &mutFileHandle{f: n, tmp: tmp}, nil
 }
@@ -765,13 +765,13 @@ var (
 	_ fs.HandleReleaser = (*mutFileHandle)(nil)
 )
 
-func (h *mutFileHandle) Read(ctx context.Context, req *fuse.ReadRequest, res *fuse.ReadResponse) error {
+func (h *mutFileHandle) Read(ctx context.Context, req *fuzeo.ReadRequest, res *fuzeo.ReadResponse) error {
 	h.f.mu.Lock()
 	defer h.f.mu.Unlock()
 
 	if h.tmp == nil {
 		Logger.Printf("Read called on camli mutFileHandle without a tempfile set")
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 
 	if req.Offset > h.f.size {
@@ -789,19 +789,19 @@ func (h *mutFileHandle) Read(ctx context.Context, req *fuse.ReadRequest, res *fu
 	}
 	if err != nil {
 		Logger.Printf("mutFileHandle.Read: %v", err)
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 	res.Data = buf[:n]
 	return nil
 }
 
-func (h *mutFileHandle) Write(ctx context.Context, req *fuse.WriteRequest, res *fuse.WriteResponse) error {
+func (h *mutFileHandle) Write(ctx context.Context, req *fuzeo.WriteRequest, res *fuzeo.WriteResponse) error {
 	h.f.mu.Lock()
 	defer h.f.mu.Unlock()
 
 	if h.tmp == nil {
 		Logger.Printf("Write called on camli mutFileHandle without a tempfile set")
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 
 	n, err := h.tmp.WriteAt(req.Data, req.Offset)
@@ -809,7 +809,7 @@ func (h *mutFileHandle) Write(ctx context.Context, req *fuse.WriteRequest, res *
 		h.f.fullPath(), len(req.Data), req.Offset, req.Flags, n, err)
 	if err != nil {
 		Logger.Println("mutFileHandle.Write:", err)
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 
 	if h.f.size < req.Offset+int64(n) {
@@ -834,18 +834,18 @@ func (h *mutFileHandle) Write(ctx context.Context, req *fuse.WriteRequest, res *
 //
 // Note that this is distinct from Fsync -- which is a user-requested
 // flush (fsync, etc...)
-func (h *mutFileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error {
+func (h *mutFileHandle) Flush(ctx context.Context, req *fuzeo.FlushRequest) error {
 	h.f.mu.Lock()
 	defer h.f.mu.Unlock()
 
 	if h.tmp == nil {
 		Logger.Printf("Flush called on camli mutFileHandle without a tempfile set")
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 	_, err := h.tmp.Seek(0, 0)
 	if err != nil {
 		Logger.Println("mutFileHandle.Flush:", err)
-		return fuse.EIO
+		return fuzeo.EIO
 	}
 	br, err := schema.WriteFileFromReader(ctx, h.f.fs.client, h.f.name, &io.LimitedReader{R: h.tmp, N: h.f.size})
 	if err != nil {
@@ -864,7 +864,7 @@ func (h *mutFileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error
 
 // Release is called when a file handle is no longer needed.  This is
 // called asynchronously after the last handle to a file is closed.
-func (h *mutFileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
+func (h *mutFileHandle) Release(ctx context.Context, req *fuzeo.ReleaseRequest) error {
 	h.f.mu.Lock()
 	defer h.f.mu.Unlock()
 

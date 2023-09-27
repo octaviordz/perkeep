@@ -1,5 +1,6 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
+
 
 /*
 Copyright 2013 The Perkeep Authors
@@ -17,7 +18,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fs
+package dokanfs
 
 import (
 	"context"
@@ -29,7 +30,7 @@ import (
 	"perkeep.org/pkg/schema"
 	"perkeep.org/pkg/search"
 
-	"bazil.org/fuse"
+	"perkeep.org/pkg/dokanfs/fuzeo"
 )
 
 // xattrPrefix is the permanode attribute prefix used for record
@@ -37,23 +38,23 @@ import (
 const xattrPrefix = "xattr:"
 
 // xattr provides common support for extended attributes for various
-// file and directory implementations (fuse.Node) within the FUSE services.
+// file and directory implementations (fuzeo.Node) within the FUSE services.
 type xattr struct {
 	typeName  string // for logging
 	fs        *CamliFileSystem
 	permanode blob.Ref
 
 	// mu guards xattrs.  Both mu and the xattrs map are provided by the
-	// fuse.Node when the struct is created.
+	// fuzeo.Node when the struct is created.
 	mu *sync.Mutex
 
-	// This is a pointer to the particular fuse.Node's location of its
-	// xattr map so that it can be initialized commonly when the fuse.Node
+	// This is a pointer to the particular fuzeo.Node's location of its
+	// xattr map so that it can be initialized commonly when the fuzeo.Node
 	// calls xattr.load(*search.DescribedPermanode)
 	xattrs *map[string][]byte
 }
 
-// load is invoked after the creation of a fuse.Node that may contain extended
+// load is invoked after the creation of a fuzeo.Node that may contain extended
 // attributes.  This creates the node's xattr map as well as fills it with any
 // extended attributes found in the permanode's claims.
 func (x *xattr) load(p *search.DescribedPermanode) {
@@ -74,7 +75,7 @@ func (x *xattr) load(p *search.DescribedPermanode) {
 	}
 }
 
-func (x *xattr) set(ctx context.Context, req *fuse.SetxattrRequest) error {
+func (x *xattr) set(ctx context.Context, req *fuzeo.SetxattrRequest) error {
 	Logger.Printf("%s.setxattr(%q) -> %q", x.typeName, req.Name, req.Xattr)
 
 	claim := schema.NewSetAttributeClaim(x.permanode, xattrPrefix+req.Name,
@@ -94,7 +95,7 @@ func (x *xattr) set(ctx context.Context, req *fuse.SetxattrRequest) error {
 	return nil
 }
 
-func (x *xattr) remove(ctx context.Context, req *fuse.RemovexattrRequest) error {
+func (x *xattr) remove(ctx context.Context, req *fuzeo.RemovexattrRequest) error {
 	Logger.Printf("%s.Removexattr(%q)", x.typeName, req.Name)
 
 	claim := schema.NewDelAttributeClaim(x.permanode, xattrPrefix+req.Name, "")
@@ -112,14 +113,14 @@ func (x *xattr) remove(ctx context.Context, req *fuse.RemovexattrRequest) error 
 	return nil
 }
 
-func (x *xattr) get(req *fuse.GetxattrRequest, res *fuse.GetxattrResponse) error {
+func (x *xattr) get(req *fuzeo.GetxattrRequest, res *fuzeo.GetxattrResponse) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 
 	val, found := (*x.xattrs)[req.Name]
 
 	if !found {
-		return fuse.ErrNoXattr
+		return fuzeo.ErrNoXattr
 	}
 
 	res.Xattr = val
@@ -127,7 +128,7 @@ func (x *xattr) get(req *fuse.GetxattrRequest, res *fuse.GetxattrResponse) error
 	return nil
 }
 
-func (x *xattr) list(req *fuse.ListxattrRequest, res *fuse.ListxattrResponse) error {
+func (x *xattr) list(req *fuzeo.ListxattrRequest, res *fuzeo.ListxattrResponse) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 
