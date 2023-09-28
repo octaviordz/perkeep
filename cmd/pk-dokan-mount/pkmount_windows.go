@@ -1,5 +1,5 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build windows
+// +build windows
 
 /*
 Copyright 2011 The Perkeep Authors
@@ -40,11 +40,11 @@ import (
 	"perkeep.org/pkg/cacher"
 	"perkeep.org/pkg/client"
 	"perkeep.org/pkg/cmdmain"
-	"perkeep.org/pkg/fs"
+	"perkeep.org/pkg/dokanfs"
 	"perkeep.org/pkg/search"
 
-	"bazil.org/fuse"
-	fusefs "bazil.org/fuse/fs"
+	"perkeep.org/pkg/dokanfs/fuzeo"
+	fuzeofs "perkeep.org/pkg/dokanfs/fuzeo/fs"
 )
 
 var (
@@ -69,7 +69,7 @@ func init() {
 var ctxbg = context.Background()
 
 func main() {
-	var conn *fuse.Conn
+	var conn *fuzeo.Conn
 
 	// Scans the arg list and sets up flags
 	client.AddFlags()
@@ -93,23 +93,23 @@ func main() {
 		usage()
 	}
 
-	var mountPoint string
-	var err error
-	if narg > 0 {
-		mountPoint = flag.Arg(0)
-	} else {
-		if fi, err := os.Stat("/pk"); err == nil && fi.IsDir() {
-			log.Printf("no mount point given; using /pk")
-			mountPoint = "/pk"
-		} else {
-			mountPoint, err = os.MkdirTemp("", "pk-mount")
-			if err != nil {
-				log.Fatal(err)
-			}
-			log.Printf("no mount point given and recommended directory /pk doesn't exist; using temp directory %s", mountPoint)
-			defer os.Remove(mountPoint)
-		}
-	}
+	var mountPoint string = `P:`
+	// var err error
+	// if narg > 0 {
+	// 	mountPoint = flag.Arg(0)
+	// } else {
+	// 	if fi, err := os.Stat("/pk"); err == nil && fi.IsDir() {
+	// 		log.Printf("no mount point given; using /pk")
+	// 		mountPoint = "/pk"
+	// 	} else {
+	// 		mountPoint, err = os.MkdirTemp("", "pk-mount")
+	// 		if err != nil {
+	// 			log.Fatal(err)
+	// 		}
+	// 		log.Printf("no mount point given and recommended directory /pk doesn't exist; using temp directory %s", mountPoint)
+	// 		defer os.Remove(mountPoint)
+	// 	}
+	// }
 
 	errorf := func(msg string, args ...interface{}) {
 		fmt.Fprintf(os.Stderr, msg, args...)
@@ -120,7 +120,7 @@ func main() {
 	var (
 		cl    *client.Client
 		root  blob.Ref // nil if only one arg
-		camfs *fs.CamliFileSystem
+		camfs *dokanfs.CamliFileSystem
 	)
 	if narg == 2 {
 		rootArg := flag.Arg(1)
@@ -168,28 +168,28 @@ func main() {
 	defer diskCacheFetcher.Clean()
 	if root.Valid() {
 		var err error
-		camfs, err = fs.NewRootedCamliFileSystem(cl, diskCacheFetcher, root)
+		camfs, err = dokanfs.NewRootedCamliFileSystem(cl, diskCacheFetcher, root)
 		if err != nil {
 			log.Fatalf("Error creating root with %v: %v", root, err)
 		}
 	} else {
-		camfs = fs.NewDefaultCamliFileSystem(cl, diskCacheFetcher)
+		camfs = dokanfs.NewDefaultCamliFileSystem(cl, diskCacheFetcher)
 	}
 
 	if *debug {
-		fuse.Debug = func(msg interface{}) { log.Print(msg) }
+		fuzeo.Debug = func(msg interface{}) { log.Print(msg) }
 	} else {
-		fs.Logger.SetOutput(io.Discard)
+		dokanfs.Logger.SetOutput(io.Discard)
 	}
 
 	// This doesn't appear to work on OS X:
 	sigc := make(chan os.Signal, 1)
 
-	conn, err = fuse.Mount(mountPoint, fuse.VolumeName(filepath.Base(mountPoint)))
+	conn, err = fuzeo.Mount(mountPoint, fuzeo.VolumeName(filepath.Base(mountPoint)))
 	if err != nil {
-		if err == fuse.ErrOSXFUSENotFound {
-			log.Fatal("FUSE not available; install from http://osxfuse.github.io/")
-		}
+		// if err == fuzeo.ErrOSXFUSENotFound {
+		// 	log.Fatal("FUSE not available; install from http://osxfuse.github.io/")
+		// }
 		log.Fatalf("Mount: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func main() {
 
 	doneServe := make(chan error, 1)
 	go func() {
-		doneServe <- fusefs.Serve(conn, camfs)
+		doneServe <- fuzeofs.Serve(conn, camfs)
 	}()
 
 	quitKey := make(chan bool, 1)
@@ -253,7 +253,7 @@ func main() {
 		os.Exit(1)
 	})
 	log.Printf("Unmounting...")
-	err = fs.Unmount(mountPoint)
+	err = dokanfs.Unmount(mountPoint)
 	log.Printf("Unmount = %v", err)
 
 	log.Printf("pk-mount FUSE process ending.")

@@ -1,5 +1,5 @@
-//go:build !linux && !darwin
-// +build !linux,!darwin
+//go:build !linux && !darwin && !windows
+// +build !linux,!darwin,!windows
 
 /*
 Copyright 2013 The Perkeep Authors

@@ -1,7 +1,6 @@
 //go:build windows
 // +build windows
 
-
 /*
 Copyright 2012 The Perkeep Authors
 

@@ -14,13 +14,23 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/keybase/client/go/kbfs/dokan"
 )
 
 // A Conn represents a connection to a mounted FUSE file system.
 type Conn struct {
+	// Ready is closed when the mount is complete or has failed.
+	Ready <-chan struct{}
+
+	// MountError stores any error from the mount process. Only valid
+	// after Ready is closed.
+	MountError error
+
 	// File handle for kernel communication. Only safe to access if
 	// rio or wio is held.
-	dev *os.File
+	/* dev *os.File */
+	dev *dokan.MountHandle
 	wio sync.RWMutex
 	rio sync.RWMutex
 
@@ -42,9 +52,11 @@ func (e *MountpointDoesNotExistError) Error() string {
 	return fmt.Sprintf("mountpoint does not exist: %v", e.Path)
 }
 
-func mount(dir string, conf *mountConfig) (fusefd *os.File, err error) {
-	var emptyFile os.File
-	return &emptyFile, fmt.Errorf("not implemented")
+func mount(dir string, conf *mountConfig) (fusefd *dokan.MountHandle, err error) {
+	var myFileSystem RFS
+	handle, err := dokan.Mount(&dokan.Config{FileSystem: myFileSystem, Path: dir})
+
+	return handle, err
 }
 
 // Mount mounts a new FUSE connection on the named directory

@@ -75,6 +75,13 @@ func Subtype(fstype string) MountOption {
 // 	return daemonTimeout(name)
 // }
 
+// VolumeName sets the volume name shown in Finder.
+//
+// OS X only. Others ignore this option.
+func VolumeName(name string) MountOption {
+	return dummyOption
+}
+
 // AllowOther allows other users to access the file system.
 func AllowOther() MountOption {
 	return func(conf *mountConfig) error {
