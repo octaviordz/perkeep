@@ -1,6 +1,6 @@
 // Adapted from github.com/bazil/fuse
 
-package fuzeo
+package fuzeo // import "perkeep.org/pkg/dokanfs/fuzeo"
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/keybase/client/go/kbfs/dokan"
+	"perkeep.org/pkg/dokanfs/fuzeo/annex"
 )
 
 // A Conn represents a connection to a mounted FUSE file system.
@@ -29,8 +29,8 @@ type Conn struct {
 
 	// File handle for kernel communication. Only safe to access if
 	// rio or wio is held.
-	/* dev *os.File */
-	dev *dokan.MountHandle
+	dev *os.File
+
 	wio sync.RWMutex
 	rio sync.RWMutex
 
@@ -52,11 +52,9 @@ func (e *MountpointDoesNotExistError) Error() string {
 	return fmt.Sprintf("mountpoint does not exist: %v", e.Path)
 }
 
-func mount(dir string, conf *mountConfig) (fusefd *dokan.MountHandle, err error) {
-	var myFileSystem RFS
-	handle, err := dokan.Mount(&dokan.Config{FileSystem: myFileSystem, Path: dir})
-
-	return handle, err
+func mount(dir string, conf *mountConfig) (handle *os.File, err error) {
+	// TODO(ORC): mountConfig is being ignored.
+	return annex.Mount(dir)
 }
 
 // Mount mounts a new FUSE connection on the named directory
@@ -91,6 +89,10 @@ func Mount(dir string, options ...MountOption) (*Conn, error) {
 	return c, nil
 }
 
+func (c *Conn) MountHandle() *os.File {
+	return c.dev
+}
+
 type OldVersionError struct {
 	Kernel     Protocol
 	LibraryMin Protocol
@@ -107,45 +109,6 @@ var (
 const maxWrite = 128 * 1024
 
 func initMount(c *Conn, conf *mountConfig) error {
-	req, err := c.ReadRequest()
-	if err != nil {
-		if err == io.EOF {
-			return ErrClosedWithoutInit
-		}
-		return err
-	}
-	r, ok := req.(*initRequest)
-	if !ok {
-		return fmt.Errorf("missing init, got: %T", req)
-	}
-
-	min := Protocol{protoVersionMinMajor, protoVersionMinMinor}
-	if r.Kernel.LT(min) {
-		req.RespondError(Errno(syscall.EPROTO))
-		c.Close()
-		return &OldVersionError{
-			Kernel:     r.Kernel,
-			LibraryMin: min,
-		}
-	}
-
-	proto := Protocol{protoVersionMaxMajor, protoVersionMaxMinor}
-	if r.Kernel.LT(proto) {
-		// Kernel doesn't support the latest version we have.
-		proto = r.Kernel
-	}
-	c.proto = proto
-
-	c.flags = r.Flags & (InitBigWrites | InitParallelDirOps | conf.initFlags)
-	s := &initResponse{
-		Library:             proto,
-		MaxReadahead:        conf.maxReadahead,
-		Flags:               c.flags,
-		MaxBackground:       conf.maxBackground,
-		CongestionThreshold: conf.congestionThreshold,
-		MaxWrite:            maxWrite,
-	}
-	r.Respond(s)
 	return nil
 }
 
@@ -215,10 +178,10 @@ func (h *Header) noResponse() {
 }
 
 func (h *Header) respond(msg []byte) {
-	out := (*outHeader)(unsafe.Pointer(&msg[0]))
-	out.Unique = uint64(h.ID)
-	h.Conn.respond(msg)
-	putMessage(h.msg)
+	// out := (*outHeader)(unsafe.Pointer(&msg[0]))
+	// out.Unique = uint64(h.ID)
+	// h.Conn.respond(msg)
+	// putMessage(h.msg)
 }
 
 // An ErrorNumber is an error with a specific error number.
@@ -473,23 +436,13 @@ func (c *Conn) Close() error {
 //	}
 
 // caller must hold wio or rio
-func (c *Conn) fd() uintptr {
-	return c.dev.Fd()
+/* func (c *Conn) fd() uintptr {*/
+func (c *Conn) fd() *os.File {
+	return c.dev
 }
 
 func (c *Conn) Protocol() Protocol {
 	return c.proto
-}
-
-// Features reports the feature flags negotiated between the kernel and
-// the FUSE library. See MountOption for how to influence features
-// activated.
-func (c *Conn) Features() InitFlags {
-	return c.flags
-}
-
-func openFlags(flags uint32) OpenFlags {
-	return OpenFlags(flags)
 }
 
 // ReadRequest returns the next FUSE request from the kernel.
@@ -497,11 +450,20 @@ func openFlags(flags uint32) OpenFlags {
 // Caller must call either Request.Respond or Request.RespondError in
 // a reasonable time. Caller must not retain Request after that call.
 func (c *Conn) ReadRequest() (Request, error) {
+
+	return annex.ReadRequest(c.fd())
+
 	m := getMessage(c)
+loop:
 	c.rio.RLock()
-	n, err := syscall.Read(syscall.Handle(c.fd()), m.buf)
-	// n, err := syscall.Read(c.fd(), m.buf)
+	n, err := annex.Read(c.fd(), m.buf)
+	// n, err := syscall.Read(syscall.Handle(c.fd()), m.buf)
 	c.rio.RUnlock()
+	if err == syscall.EINTR {
+		// OSXFUSE sends EINTR to userspace when a request interrupt
+		// completed before it got sent to userspace?
+		goto loop
+	}
 	if err != nil && err != syscall.ENODEV {
 		putMessage(m)
 		return nil, err
@@ -520,6 +482,11 @@ func (c *Conn) ReadRequest() (Request, error) {
 	// FreeBSD FUSE sends a short length in the header
 	// for FUSE_INIT even though the actual read length is correct.
 	if n == inHeaderSize+initInSize && m.hdr.Opcode == opInit && m.hdr.Len < uint32(n) {
+		m.hdr.Len = uint32(n)
+	}
+
+	// OSXFUSE sometimes sends the wrong m.hdr.Len in a FUSE_WRITE message.
+	if m.hdr.Len < uint32(n) && m.hdr.Len >= uint32(unsafe.Sizeof(writeIn{})) && m.hdr.Opcode == opWrite {
 		m.hdr.Len = uint32(n)
 	}
 
@@ -586,16 +553,18 @@ func (c *Conn) ReadRequest() (Request, error) {
 			goto corrupt
 		}
 		req = &SetattrRequest{
-			Header: m.Header(),
-			Valid:  SetattrValid(in.Valid),
-			Handle: HandleID(in.Fh),
-			Size:   in.Size,
-			Atime:  time.Unix(int64(in.Atime), int64(in.AtimeNsec)),
-			Mtime:  time.Unix(int64(in.Mtime), int64(in.MtimeNsec)),
-			Ctime:  time.Unix(int64(in.Ctime), int64(in.CtimeNsec)),
-			Mode:   fileMode(in.Mode),
-			Uid:    in.Uid,
-			Gid:    in.Gid,
+			Header:   m.Header(),
+			Valid:    SetattrValid(in.Valid),
+			Handle:   HandleID(in.Fh),
+			Size:     in.Size,
+			Atime:    time.Unix(int64(in.Atime), int64(in.AtimeNsec)),
+			Mtime:    time.Unix(int64(in.Mtime), int64(in.MtimeNsec)),
+			Mode:     fileMode(in.Mode),
+			Uid:      in.Uid,
+			Gid:      in.Gid,
+			Bkuptime: in.BkupTime(),
+			Chgtime:  in.Chgtime(),
+			Flags:    in.Flags(),
 		}
 
 	case opReadlink:
@@ -729,10 +698,9 @@ func (c *Conn) ReadRequest() (Request, error) {
 			goto corrupt
 		}
 		req = &OpenRequest{
-			Header:    m.Header(),
-			Dir:       m.hdr.Opcode == opOpendir,
-			Flags:     openFlags(in.Flags),
-			OpenFlags: OpenRequestFlags(in.OpenFlags),
+			Header: m.Header(),
+			Dir:    m.hdr.Opcode == opOpendir,
+			Flags:  openFlags(in.Flags),
 		}
 
 	case opRead, opReaddir:
@@ -749,7 +717,7 @@ func (c *Conn) ReadRequest() (Request, error) {
 		}
 		if c.proto.GE(Protocol{7, 9}) {
 			r.Flags = ReadFlags(in.ReadFlags)
-			r.LockOwner = LockOwner(in.LockOwner)
+			r.LockOwner = in.LockOwner
 			r.FileFlags = openFlags(in.Flags)
 		}
 		req = r
@@ -766,7 +734,7 @@ func (c *Conn) ReadRequest() (Request, error) {
 			Flags:  WriteFlags(in.WriteFlags),
 		}
 		if c.proto.GE(Protocol{7, 9}) {
-			r.LockOwner = LockOwner(in.LockOwner)
+			r.LockOwner = in.LockOwner
 			r.FileFlags = openFlags(in.Flags)
 		}
 		buf := m.bytes()[writeInSize(c.proto):]
@@ -792,7 +760,7 @@ func (c *Conn) ReadRequest() (Request, error) {
 			Handle:       HandleID(in.Fh),
 			Flags:        openFlags(in.Flags),
 			ReleaseFlags: ReleaseFlags(in.ReleaseFlags),
-			LockOwner:    LockOwner(in.LockOwner),
+			LockOwner:    in.LockOwner,
 		}
 
 	case opFsync, opFsyncdir:
@@ -808,12 +776,11 @@ func (c *Conn) ReadRequest() (Request, error) {
 		}
 
 	case opSetxattr:
-		size := setxattrInSize(c.flags)
-		if m.len() < size {
+		in := (*setxattrIn)(m.data())
+		if m.len() < unsafe.Sizeof(*in) {
 			goto corrupt
 		}
-		in := (*setxattrIn)(m.data())
-		m.off += int(size)
+		m.off += int(unsafe.Sizeof(*in))
 		name := m.bytes()
 		i := bytes.IndexByte(name, '\x00')
 		if i < 0 {
@@ -824,16 +791,13 @@ func (c *Conn) ReadRequest() (Request, error) {
 			goto corrupt
 		}
 		xattr = xattr[:in.Size]
-		r := &SetxattrRequest{
-			Header: m.Header(),
-			Flags:  in.Flags,
-			Name:   string(name[:i]),
-			Xattr:  xattr,
+		req = &SetxattrRequest{
+			Header:   m.Header(),
+			Flags:    in.Flags,
+			Position: in.position(),
+			Name:     string(name[:i]),
+			Xattr:    xattr,
 		}
-		if c.proto.GE(Protocol{7, 32}) {
-			r.SetxattrFlags = SetxattrFlags(in.SetxattrFlags)
-		}
-		req = r
 
 	case opGetxattr:
 		in := (*getxattrIn)(m.data())
@@ -846,9 +810,10 @@ func (c *Conn) ReadRequest() (Request, error) {
 			goto corrupt
 		}
 		req = &GetxattrRequest{
-			Header: m.Header(),
-			Name:   string(name[:i]),
-			Size:   in.Size,
+			Header:   m.Header(),
+			Name:     string(name[:i]),
+			Size:     in.Size,
+			Position: in.position(),
 		}
 
 	case opListxattr:
@@ -857,8 +822,9 @@ func (c *Conn) ReadRequest() (Request, error) {
 			goto corrupt
 		}
 		req = &ListxattrRequest{
-			Header: m.Header(),
-			Size:   in.Size,
+			Header:   m.Header(),
+			Size:     in.Size,
+			Position: in.position(),
 		}
 
 	case opRemovexattr:
@@ -880,7 +846,8 @@ func (c *Conn) ReadRequest() (Request, error) {
 		req = &FlushRequest{
 			Header:    m.Header(),
 			Handle:    HandleID(in.Fh),
-			LockOwner: LockOwner(in.LockOwner),
+			Flags:     in.FlushFlags,
+			LockOwner: in.LockOwner,
 		}
 
 	case opInit:
@@ -888,12 +855,19 @@ func (c *Conn) ReadRequest() (Request, error) {
 		if m.len() < unsafe.Sizeof(*in) {
 			goto corrupt
 		}
-		req = &initRequest{
+		req = &InitRequest{
 			Header:       m.Header(),
 			Kernel:       Protocol{in.Major, in.Minor},
 			MaxReadahead: in.MaxReadahead,
 			Flags:        InitFlags(in.Flags),
 		}
+
+	case opGetlk:
+		panic("opGetlk")
+	case opSetlk:
+		panic("opSetlk")
+	case opSetlkw:
+		panic("opSetlkw")
 
 	case opAccess:
 		in := (*accessIn)(m.data())
@@ -950,107 +924,38 @@ func (c *Conn) ReadRequest() (Request, error) {
 			Header: m.Header(),
 		}
 
-	case opNotifyReply:
-		req = &NotifyReply{
-			Header: m.Header(),
-			msg:    m,
-		}
-
-	case opPoll:
-		in := (*pollIn)(m.data())
+	// OS X
+	case opSetvolname:
+		panic("opSetvolname")
+	case opGetxtimes:
+		panic("opGetxtimes")
+	case opExchange:
+		in := (*exchangeIn)(m.data())
 		if m.len() < unsafe.Sizeof(*in) {
 			goto corrupt
 		}
-		req = &PollRequest{
-			Header: m.Header(),
-			Handle: HandleID(in.Fh),
-			kh:     in.Kh,
-			Flags:  PollFlags(in.Flags),
-			Events: PollEvents(in.Events),
-		}
-
-	case opBatchForget:
-		in := (*batchForgetIn)(m.data())
-		if m.len() < unsafe.Sizeof(*in) {
+		oldDirNodeID := NodeID(in.Olddir)
+		newDirNodeID := NodeID(in.Newdir)
+		oldNew := m.bytes()[unsafe.Sizeof(*in):]
+		// oldNew should be "oldname\x00newname\x00"
+		if len(oldNew) < 4 {
 			goto corrupt
 		}
-		m.off += int(unsafe.Sizeof(*in))
-		items := make([]BatchForgetItem, 0, in.Count)
-		for count := in.Count; count > 0; count-- {
-			one := (*forgetOne)(m.data())
-			if m.len() < unsafe.Sizeof(*one) {
-				goto corrupt
-			}
-			m.off += int(unsafe.Sizeof(*one))
-			items = append(items, BatchForgetItem{
-				NodeID: NodeID(one.NodeID),
-				N:      one.Nlookup,
-			})
-		}
-		req = &BatchForgetRequest{
-			Header: m.Header(),
-			Forget: items,
-		}
-
-	case opSetlk, opSetlkw:
-		in := (*lkIn)(m.data())
-		if m.len() < unsafe.Sizeof(*in) {
+		if oldNew[len(oldNew)-1] != '\x00' {
 			goto corrupt
 		}
-		tmp := &LockRequest{
-			Header:    m.Header(),
-			Handle:    HandleID(in.Fh),
-			LockOwner: LockOwner(in.Owner),
-			Lock: FileLock{
-				Start: in.Lk.Start,
-				End:   in.Lk.End,
-				Type:  LockType(in.Lk.Type),
-				PID:   int32(in.Lk.PID),
-			},
-			LockFlags: LockFlags(in.LkFlags),
-		}
-		switch {
-		case tmp.Lock.Type == LockUnlock:
-			req = (*UnlockRequest)(tmp)
-		case m.hdr.Opcode == opSetlkw:
-			req = (*LockWaitRequest)(tmp)
-		default:
-			req = tmp
-		}
-
-	case opGetlk:
-		in := (*lkIn)(m.data())
-		if m.len() < unsafe.Sizeof(*in) {
+		i := bytes.IndexByte(oldNew, '\x00')
+		if i < 0 {
 			goto corrupt
 		}
-		req = &QueryLockRequest{
-			Header:    m.Header(),
-			Handle:    HandleID(in.Fh),
-			LockOwner: LockOwner(in.Owner),
-			Lock: FileLock{
-				Start: in.Lk.Start,
-				End:   in.Lk.End,
-				Type:  LockType(in.Lk.Type),
-				// fuzeo.h claims this field is a uint32, but then the
-				// spec talks about -1 as a value, and using int as
-				// the C definition is pretty common. Make our API use
-				// a signed integer.
-				PID: int32(in.Lk.PID),
-			},
-			LockFlags: LockFlags(in.LkFlags),
-		}
-
-	case opFAllocate:
-		in := (*fAllocateIn)(m.data())
-		if m.len() < unsafe.Sizeof(*in) {
-			goto corrupt
-		}
-		req = &FAllocateRequest{
-			Header: m.Header(),
-			Handle: HandleID(in.Fh),
-			Offset: in.Offset,
-			Length: in.Length,
-			Mode:   FAllocateFlags(in.Mode),
+		oldName, newName := string(oldNew[:i]), string(oldNew[i+1:len(oldNew)-1])
+		req = &ExchangeDataRequest{
+			Header:  m.Header(),
+			OldDir:  oldDirNodeID,
+			NewDir:  newDirNodeID,
+			OldName: oldName,
+			NewName: newName,
+			// TODO options
 		}
 	}
 
@@ -1059,16 +964,24 @@ func (c *Conn) ReadRequest() (Request, error) {
 corrupt:
 	Debug(malformedMessage{})
 	putMessage(m)
-	return nil, fmt.Errorf("fuzeo: malformed message")
+	return nil, fmt.Errorf("fuse: malformed message")
 
 unrecognized:
 	// Unrecognized message.
 	// Assume higher-level code will send a "no idea what you mean" error.
-	req = &UnrecognizedRequest{
-		Header: m.Header(),
-		Opcode: m.hdr.Opcode,
-	}
-	return req, nil
+	h := m.Header()
+	return &h, nil
+}
+
+// Features reports the feature flags negotiated between the kernel and
+// the FUSE library. See MountOption for how to influence features
+// activated.
+func (c *Conn) Features() InitFlags {
+	return c.flags
+}
+
+func openFlags(flags uint32) OpenFlags {
+	return OpenFlags(flags)
 }
 
 type bugShortKernelWrite struct {
@@ -1099,34 +1012,6 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-func (c *Conn) writeToKernel(msg []byte) error {
-	out := (*outHeader)(unsafe.Pointer(&msg[0]))
-	out.Len = uint32(len(msg))
-
-	c.wio.RLock()
-	defer c.wio.RUnlock()
-	// nn, err := syscall.Write(c.fd(), msg)
-	nn, err := syscall.Write(syscall.Handle(c.fd()), msg)
-	if err == nil && nn != len(msg) {
-		Debug(bugShortKernelWrite{
-			Written: int64(nn),
-			Length:  int64(len(msg)),
-			Error:   errorString(err),
-			Stack:   stack(),
-		})
-	}
-	return err
-}
-
-func (c *Conn) respond(msg []byte) {
-	if err := c.writeToKernel(msg); err != nil {
-		Debug(bugKernelWriteError{
-			Error: errorString(err),
-			Stack: stack(),
-		})
-	}
-}
-
 type notCachedError struct{}
 
 func (notCachedError) Error() string {
@@ -1144,115 +1029,6 @@ func (notCachedError) Errno() Errno {
 var (
 	ErrNotCached = notCachedError{}
 )
-
-// sendNotify sends a notification to kernel.
-//
-// A returned ENOENT is translated to a friendlier error.
-func (c *Conn) sendNotify(msg []byte) error {
-	switch err := c.writeToKernel(msg); err {
-	case syscall.ENOENT:
-		return ErrNotCached
-	default:
-		return err
-	}
-}
-
-// InvalidateNode invalidates the kernel cache of the attributes and a
-// range of the data of a node.
-//
-// Giving offset 0 and size -1 means all data. To invalidate just the
-// attributes, give offset 0 and size 0.
-//
-// Returns ErrNotCached if the kernel is not currently caching the
-// node.
-func (c *Conn) InvalidateNode(nodeID NodeID, off int64, size int64) error {
-	buf := newBuffer(unsafe.Sizeof(notifyInvalInodeOut{}))
-	h := (*outHeader)(unsafe.Pointer(&buf[0]))
-	// h.Unique is 0
-	h.Error = notifyCodeInvalInode
-	out := (*notifyInvalInodeOut)(buf.alloc(unsafe.Sizeof(notifyInvalInodeOut{})))
-	out.Ino = uint64(nodeID)
-	out.Off = off
-	out.Len = size
-	return c.sendNotify(buf)
-}
-
-// InvalidateEntry invalidates the kernel cache of the directory entry
-// identified by parent directory node ID and entry basename.
-//
-// Kernel may or may not cache directory listings. To invalidate
-// those, use InvalidateNode to invalidate all of the data for a
-// directory. (As of 2015-06, Linux FUSE does not cache directory
-// listings.)
-//
-// Returns ErrNotCached if the kernel is not currently caching the
-// node.
-func (c *Conn) InvalidateEntry(parent NodeID, name string) error {
-	const maxUint32 = ^uint32(0)
-	if uint64(len(name)) > uint64(maxUint32) {
-		// very unlikely, but we don't want to silently truncate
-		return syscall.ENAMETOOLONG
-	}
-	buf := newBuffer(unsafe.Sizeof(notifyInvalEntryOut{}) + uintptr(len(name)) + 1)
-	h := (*outHeader)(unsafe.Pointer(&buf[0]))
-	// h.Unique is 0
-	h.Error = notifyCodeInvalEntry
-	out := (*notifyInvalEntryOut)(buf.alloc(unsafe.Sizeof(notifyInvalEntryOut{})))
-	out.Parent = uint64(parent)
-	out.Namelen = uint32(len(name))
-	buf = append(buf, name...)
-	buf = append(buf, '\x00')
-	return c.sendNotify(buf)
-}
-
-// NotifyDelete informs the kernel that a directory entry has been deleted.
-//
-// Using this instead of [InvalidateEntry] races on networked systems where the directory is concurrently in use.
-// See [Linux kernel commit `451d0f599934fd97faf54a5d7954b518e66192cb`] for more.
-//
-// `child` can be 0 to delete whatever entry is found with the given name, or set to ensure only matching entry is deleted.
-//
-// Only available when [Conn.Protocol] is greater than or equal to 7.18, see [Protocol.HasNotifyDelete].
-//
-// Errors include:
-//
-//   - [ENOTDIR]: `parent` does not refer to a directory
-//   - [ENOENT]: no such entry found
-//   - [EBUSY]: entry is a mountpoint
-//   - [ENOTEMPTY]: entry is a directory, with entries inside it still cached
-//
-// [Linux kernel commit `451d0f599934fd97faf54a5d7954b518e66192cb`]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=451d0f599934fd97faf54a5d7954b518e66192cb
-func (c *Conn) NotifyDelete(parent NodeID, child NodeID, name string) error {
-	const maxUint32 = ^uint32(0)
-	if uint64(len(name)) > uint64(maxUint32) {
-		// very unlikely, but we don't want to silently truncate
-		return syscall.ENAMETOOLONG
-	}
-	buf := newBuffer(unsafe.Sizeof(notifyDeleteOut{}) + uintptr(len(name)) + 1)
-	h := (*outHeader)(unsafe.Pointer(&buf[0]))
-	// h.Unique is 0
-	h.Error = notifyCodeDelete
-	out := (*notifyDeleteOut)(buf.alloc(unsafe.Sizeof(notifyDeleteOut{})))
-	out.Parent = uint64(parent)
-	out.Child = uint64(child)
-	out.Namelen = uint32(len(name))
-	buf = append(buf, name...)
-	buf = append(buf, '\x00')
-	return c.sendNotify(buf)
-}
-
-func (c *Conn) NotifyStore(nodeID NodeID, offset uint64, data []byte) error {
-	buf := newBuffer(unsafe.Sizeof(notifyStoreOut{}) + uintptr(len(data)))
-	h := (*outHeader)(unsafe.Pointer(&buf[0]))
-	// h.Unique is 0
-	h.Error = notifyCodeStore
-	out := (*notifyStoreOut)(buf.alloc(unsafe.Sizeof(notifyStoreOut{})))
-	out.Nodeid = uint64(nodeID)
-	out.Offset = offset
-	out.Size = uint32(len(data))
-	buf = append(buf, data...)
-	return c.sendNotify(buf)
-}
 
 type NotifyRetrieval struct {
 	// we may want fields later, so don't let callers know it's the
@@ -1280,44 +1056,23 @@ func (n *NotifyRetrieval) Finish(r *NotifyReply) []byte {
 	return data
 }
 
-func (c *Conn) NotifyRetrieve(notificationID RequestID, nodeID NodeID, offset uint64, size uint32) (*NotifyRetrieval, error) {
-	// notificationID may collide with kernel-chosen requestIDs, it's
-	// up to the caller to branch based on the opCode.
-
-	buf := newBuffer(unsafe.Sizeof(notifyRetrieveOut{}))
-	h := (*outHeader)(unsafe.Pointer(&buf[0]))
-	// h.Unique is 0
-	h.Error = notifyCodeRetrieve
-	out := (*notifyRetrieveOut)(buf.alloc(unsafe.Sizeof(notifyRetrieveOut{})))
-	out.NotifyUnique = uint64(notificationID)
-	out.Nodeid = uint64(nodeID)
-	out.Offset = offset
-	// kernel constrains size to maxWrite for us
-	out.Size = size
-	if err := c.sendNotify(buf); err != nil {
-		return nil, err
-	}
-	r := &NotifyRetrieval{}
-	return r, nil
-}
-
-// NotifyPollWakeup sends a notification to the kernel to wake up all
-// clients waiting on this node. Wakeup is a value from a PollRequest
-// for a Handle or a Node currently alive (Forget has not been called
-// on it).
-func (c *Conn) NotifyPollWakeup(wakeup PollWakeup) error {
-	if wakeup.kh == 0 {
-		// likely somebody ignored the comma-ok return
-		return nil
-	}
-	buf := newBuffer(unsafe.Sizeof(notifyPollWakeupOut{}))
-	h := (*outHeader)(unsafe.Pointer(&buf[0]))
-	// h.Unique is 0
-	h.Error = notifyCodePoll
-	out := (*notifyPollWakeupOut)(buf.alloc(unsafe.Sizeof(notifyPollWakeupOut{})))
-	out.Kh = wakeup.kh
-	return c.sendNotify(buf)
-}
+// // NotifyPollWakeup sends a notification to the kernel to wake up all
+// // clients waiting on this node. Wakeup is a value from a PollRequest
+// // for a Handle or a Node currently alive (Forget has not been called
+// // on it).
+// func (c *Conn) NotifyPollWakeup(wakeup PollWakeup) error {
+// 	if wakeup.kh == 0 {
+// 		// likely somebody ignored the comma-ok return
+// 		return nil
+// 	}
+// 	buf := newBuffer(unsafe.Sizeof(notifyPollWakeupOut{}))
+// 	h := (*outHeader)(unsafe.Pointer(&buf[0]))
+// 	// h.Unique is 0
+// 	h.Error = notifyCodePoll
+// 	out := (*notifyPollWakeupOut)(buf.alloc(unsafe.Sizeof(notifyPollWakeupOut{})))
+// 	out.Kh = wakeup.kh
+// 	return c.sendNotify(buf)
+// }
 
 // LockOwner is a file-local opaque identifier assigned by the kernel
 // to identify the owner of a particular lock.

@@ -187,9 +187,6 @@ func main() {
 
 	conn, err = fuzeo.Mount(mountPoint, fuzeo.VolumeName(filepath.Base(mountPoint)))
 	if err != nil {
-		// if err == fuzeo.ErrOSXFUSENotFound {
-		// 	log.Fatal("FUSE not available; install from http://osxfuse.github.io/")
-		// }
 		log.Fatalf("Mount: %v", err)
 	}
 

@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -18,16 +17,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/keybase/client/go/kbfs/dokan"
 	"perkeep.org/pkg/dokanfs/fuzeo"
-	"perkeep.org/pkg/dokanfs/fuzeo/fs/fuzeoutil"
+	"perkeep.org/pkg/dokanfs/fuzeo/annex"
 )
 
 const (
 	attrValidTime  = 1 * time.Minute
 	entryValidTime = 1 * time.Minute
 )
-
-// TODO: FINISH DOCS
 
 // An FS is the interface required of a file system.
 //
@@ -484,6 +482,19 @@ type Server struct {
 // of fs and the Nodes and Handles it makes available.  It returns only
 // when the connection has been closed or an unexpected error occurs.
 func (s *Server) Serve(fs FS) error {
+	var fileSystemInter fileSystemInter
+	//TODO(ORC): A way to avoid making MountHandle public.
+	fd := s.conn.MountHandle()
+	handleEntry := annex.MountHandleMap()[fd]
+
+	//TODO(ORC): Mount handle.
+	_, err := dokan.Mount(
+		&dokan.Config{FileSystem: fileSystemInter, Path: handleEntry.Dir})
+	if err != nil {
+		return err
+	}
+	// return handle.BlockTillDone()
+
 	defer s.wg.Wait() // Wait for worker goroutines to complete before return
 
 	s.fs = fs
@@ -914,6 +925,10 @@ func (m *logDuplicateRequestID) String() string {
 	return fmt.Sprintf("Duplicate request: new %v, old %v", m.New, m.Old)
 }
 
+// func (c *Server) serve(conn fuzeo.Conn) error {
+// 	return conn.MountHandle().BlockTillDone()
+// }
+
 func (c *Server) serve(r fuzeo.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1051,657 +1066,658 @@ func (c *Server) serve(r fuzeo.Request) {
 
 // handleRequest will either a) call done(s) and r.Respond(s) OR b) return an error.
 func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode, r fuzeo.Request, done func(resp interface{})) error {
-	switch r := r.(type) {
-	default:
-		// Note: To fuzeo, ENOSYS means "this server never implements this request."
-		// It would be inappropriate to return ENOSYS for other operations in this
-		// switch that might only be unavailable in some contexts, not all.
-		return syscall.ENOSYS
+	return fmt.Errorf("not implemented")
+	// switch r := r.(type) {
+	// default:
+	// 	// Note: To fuzeo, ENOSYS means "this server never implements this request."
+	// 	// It would be inappropriate to return ENOSYS for other operations in this
+	// 	// switch that might only be unavailable in some contexts, not all.
+	// 	return syscall.ENOSYS
 
-	case *fuzeo.StatfsRequest:
-		s := &fuzeo.StatfsResponse{}
-		if fs, ok := c.fs.(FSStatfser); ok {
-			if err := fs.Statfs(ctx, r, s); err != nil {
-				return err
-			}
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.StatfsRequest:
+	// 	s := &fuzeo.StatfsResponse{}
+	// 	if fs, ok := c.fs.(FSStatfser); ok {
+	// 		if err := fs.Statfs(ctx, r, s); err != nil {
+	// 			return err
+	// 		}
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	// Node operations.
-	case *fuzeo.GetattrRequest:
-		s := &fuzeo.GetattrResponse{}
-		if n, ok := node.(NodeGetattrer); ok {
-			if err := n.Getattr(ctx, r, s); err != nil {
-				return err
-			}
-		} else {
-			if err := snode.attr(ctx, &s.Attr); err != nil {
-				return err
-			}
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// // Node operations.
+	// case *fuzeo.GetattrRequest:
+	// 	s := &fuzeo.GetattrResponse{}
+	// 	if n, ok := node.(NodeGetattrer); ok {
+	// 		if err := n.Getattr(ctx, r, s); err != nil {
+	// 			return err
+	// 		}
+	// 	} else {
+	// 		if err := snode.attr(ctx, &s.Attr); err != nil {
+	// 			return err
+	// 		}
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.SetattrRequest:
-		s := &fuzeo.SetattrResponse{}
-		if n, ok := node.(NodeSetattrer); ok {
-			if err := n.Setattr(ctx, r, s); err != nil {
-				return err
-			}
-		}
+	// case *fuzeo.SetattrRequest:
+	// 	s := &fuzeo.SetattrResponse{}
+	// 	if n, ok := node.(NodeSetattrer); ok {
+	// 		if err := n.Setattr(ctx, r, s); err != nil {
+	// 			return err
+	// 		}
+	// 	}
 
-		if err := snode.attr(ctx, &s.Attr); err != nil {
-			return err
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// 	if err := snode.attr(ctx, &s.Attr); err != nil {
+	// 		return err
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.SymlinkRequest:
-		s := &fuzeo.SymlinkResponse{}
-		initLookupResponse(&s.LookupResponse)
-		n, ok := node.(NodeSymlinker)
-		if !ok {
-			return syscall.EIO // XXX or EPERM like Mkdir?
-		}
-		n2, err := n.Symlink(ctx, r)
-		if err != nil {
-			return err
-		}
-		if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.NewName, n2); err != nil {
-			return err
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.SymlinkRequest:
+	// 	s := &fuzeo.SymlinkResponse{}
+	// 	initLookupResponse(&s.LookupResponse)
+	// 	n, ok := node.(NodeSymlinker)
+	// 	if !ok {
+	// 		return syscall.EIO // XXX or EPERM like Mkdir?
+	// 	}
+	// 	n2, err := n.Symlink(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.NewName, n2); err != nil {
+	// 		return err
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.ReadlinkRequest:
-		n, ok := node.(NodeReadlinker)
-		if !ok {
-			return syscall.EIO /// XXX or EPERM?
-		}
-		target, err := n.Readlink(ctx, r)
-		if err != nil {
-			return err
-		}
-		done(target)
-		r.Respond(target)
-		return nil
+	// case *fuzeo.ReadlinkRequest:
+	// 	n, ok := node.(NodeReadlinker)
+	// 	if !ok {
+	// 		return syscall.EIO /// XXX or EPERM?
+	// 	}
+	// 	target, err := n.Readlink(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	done(target)
+	// 	r.Respond(target)
+	// 	return nil
 
-	case *fuzeo.LinkRequest:
-		n, ok := node.(NodeLinker)
-		if !ok {
-			return syscall.EIO /// XXX or EPERM?
-		}
-		c.meta.Lock()
-		var oldNode *serveNode
-		if int(r.OldNode) < len(c.node) {
-			oldNode = c.node[r.OldNode]
-		}
-		c.meta.Unlock()
-		if oldNode == nil {
-			c.debug(logLinkRequestOldNodeNotFound{
-				Request: r.Hdr(),
-				In:      r,
-			})
-			return syscall.EIO
-		}
-		n2, err := n.Link(ctx, r, oldNode.node)
-		if err != nil {
-			return err
-		}
-		s := &fuzeo.LookupResponse{}
-		initLookupResponse(s)
-		if err := c.saveLookup(ctx, s, snode, r.NewName, n2); err != nil {
-			return err
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.LinkRequest:
+	// 	n, ok := node.(NodeLinker)
+	// 	if !ok {
+	// 		return syscall.EIO /// XXX or EPERM?
+	// 	}
+	// 	c.meta.Lock()
+	// 	var oldNode *serveNode
+	// 	if int(r.OldNode) < len(c.node) {
+	// 		oldNode = c.node[r.OldNode]
+	// 	}
+	// 	c.meta.Unlock()
+	// 	if oldNode == nil {
+	// 		c.debug(logLinkRequestOldNodeNotFound{
+	// 			Request: r.Hdr(),
+	// 			In:      r,
+	// 		})
+	// 		return syscall.EIO
+	// 	}
+	// 	n2, err := n.Link(ctx, r, oldNode.node)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	s := &fuzeo.LookupResponse{}
+	// 	initLookupResponse(s)
+	// 	if err := c.saveLookup(ctx, s, snode, r.NewName, n2); err != nil {
+	// 		return err
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.RemoveRequest:
-		n, ok := node.(NodeRemover)
-		if !ok {
-			return syscall.EIO /// XXX or EPERM?
-		}
-		err := n.Remove(ctx, r)
-		if err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.RemoveRequest:
+	// 	n, ok := node.(NodeRemover)
+	// 	if !ok {
+	// 		return syscall.EIO /// XXX or EPERM?
+	// 	}
+	// 	err := n.Remove(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.AccessRequest:
-		if n, ok := node.(NodeAccesser); ok {
-			if err := n.Access(ctx, r); err != nil {
-				return err
-			}
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.AccessRequest:
+	// 	if n, ok := node.(NodeAccesser); ok {
+	// 		if err := n.Access(ctx, r); err != nil {
+	// 			return err
+	// 		}
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.LookupRequest:
-		var n2 Node
-		var err error
-		s := &fuzeo.LookupResponse{}
-		initLookupResponse(s)
-		if n, ok := node.(NodeStringLookuper); ok {
-			n2, err = n.Lookup(ctx, r.Name)
-		} else if n, ok := node.(NodeRequestLookuper); ok {
-			n2, err = n.Lookup(ctx, r, s)
-		} else {
-			return syscall.ENOENT
-		}
-		if err != nil {
-			return err
-		}
-		if err := c.saveLookup(ctx, s, snode, r.Name, n2); err != nil {
-			return err
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.LookupRequest:
+	// 	var n2 Node
+	// 	var err error
+	// 	s := &fuzeo.LookupResponse{}
+	// 	initLookupResponse(s)
+	// 	if n, ok := node.(NodeStringLookuper); ok {
+	// 		n2, err = n.Lookup(ctx, r.Name)
+	// 	} else if n, ok := node.(NodeRequestLookuper); ok {
+	// 		n2, err = n.Lookup(ctx, r, s)
+	// 	} else {
+	// 		return syscall.ENOENT
+	// 	}
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if err := c.saveLookup(ctx, s, snode, r.Name, n2); err != nil {
+	// 		return err
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.MkdirRequest:
-		s := &fuzeo.MkdirResponse{}
-		initLookupResponse(&s.LookupResponse)
-		n, ok := node.(NodeMkdirer)
-		if !ok {
-			return syscall.EPERM
-		}
-		n2, err := n.Mkdir(ctx, r)
-		if err != nil {
-			return err
-		}
-		if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.Name, n2); err != nil {
-			return err
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.MkdirRequest:
+	// 	s := &fuzeo.MkdirResponse{}
+	// 	initLookupResponse(&s.LookupResponse)
+	// 	n, ok := node.(NodeMkdirer)
+	// 	if !ok {
+	// 		return syscall.EPERM
+	// 	}
+	// 	n2, err := n.Mkdir(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.Name, n2); err != nil {
+	// 		return err
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.OpenRequest:
-		s := &fuzeo.OpenResponse{}
-		var h2 Handle
-		if n, ok := node.(NodeOpener); ok {
-			hh, err := n.Open(ctx, r, s)
-			if err != nil {
-				return err
-			}
-			h2 = hh
-		} else {
-			h2 = node
-		}
-		s.Handle = c.saveHandle(h2)
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.OpenRequest:
+	// 	s := &fuzeo.OpenResponse{}
+	// 	var h2 Handle
+	// 	if n, ok := node.(NodeOpener); ok {
+	// 		hh, err := n.Open(ctx, r, s)
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		h2 = hh
+	// 	} else {
+	// 		h2 = node
+	// 	}
+	// 	s.Handle = c.saveHandle(h2)
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.CreateRequest:
-		n, ok := node.(NodeCreater)
-		if !ok {
-			// If we send back ENOSYS, fuzeo will try mknod+open.
-			return syscall.EPERM
-		}
-		s := &fuzeo.CreateResponse{OpenResponse: fuzeo.OpenResponse{}}
-		initLookupResponse(&s.LookupResponse)
-		n2, h2, err := n.Create(ctx, r, s)
-		if err != nil {
-			return err
-		}
-		if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.Name, n2); err != nil {
-			return err
-		}
-		s.Handle = c.saveHandle(h2)
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.CreateRequest:
+	// 	n, ok := node.(NodeCreater)
+	// 	if !ok {
+	// 		// If we send back ENOSYS, fuzeo will try mknod+open.
+	// 		return syscall.EPERM
+	// 	}
+	// 	s := &fuzeo.CreateResponse{OpenResponse: fuzeo.OpenResponse{}}
+	// 	initLookupResponse(&s.LookupResponse)
+	// 	n2, h2, err := n.Create(ctx, r, s)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.Name, n2); err != nil {
+	// 		return err
+	// 	}
+	// 	s.Handle = c.saveHandle(h2)
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.GetxattrRequest:
-		n, ok := node.(NodeGetxattrer)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		s := &fuzeo.GetxattrResponse{}
-		err := n.Getxattr(ctx, r, s)
-		if err != nil {
-			return err
-		}
-		if r.Size != 0 && uint64(len(s.Xattr)) > uint64(r.Size) {
-			return syscall.ERANGE
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.GetxattrRequest:
+	// 	n, ok := node.(NodeGetxattrer)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	s := &fuzeo.GetxattrResponse{}
+	// 	err := n.Getxattr(ctx, r, s)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if r.Size != 0 && uint64(len(s.Xattr)) > uint64(r.Size) {
+	// 		return syscall.ERANGE
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.ListxattrRequest:
-		n, ok := node.(NodeListxattrer)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		s := &fuzeo.ListxattrResponse{}
-		err := n.Listxattr(ctx, r, s)
-		if err != nil {
-			return err
-		}
-		if r.Size != 0 && uint64(len(s.Xattr)) > uint64(r.Size) {
-			return syscall.ERANGE
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.ListxattrRequest:
+	// 	n, ok := node.(NodeListxattrer)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	s := &fuzeo.ListxattrResponse{}
+	// 	err := n.Listxattr(ctx, r, s)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if r.Size != 0 && uint64(len(s.Xattr)) > uint64(r.Size) {
+	// 		return syscall.ERANGE
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.SetxattrRequest:
-		n, ok := node.(NodeSetxattrer)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		err := n.Setxattr(ctx, r)
-		if err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.SetxattrRequest:
+	// 	n, ok := node.(NodeSetxattrer)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	err := n.Setxattr(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.RemovexattrRequest:
-		n, ok := node.(NodeRemovexattrer)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		err := n.Removexattr(ctx, r)
-		if err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.RemovexattrRequest:
+	// 	n, ok := node.(NodeRemovexattrer)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	err := n.Removexattr(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.ForgetRequest:
-		_, forget := c.dropNode(r.Hdr().Node, r.N)
-		if forget {
-			n, ok := node.(NodeForgetter)
-			if ok {
-				n.Forget()
-			}
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.ForgetRequest:
+	// 	_, forget := c.dropNode(r.Hdr().Node, r.N)
+	// 	if forget {
+	// 		n, ok := node.(NodeForgetter)
+	// 		if ok {
+	// 			n.Forget()
+	// 		}
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.BatchForgetRequest:
-		// BatchForgetRequest is hard to unit test, as it
-		// fundamentally relies on something unprivileged userspace
-		// has little control over. A root-only, Linux-only test could
-		// be written with `echo 2 >/proc/sys/vm/drop_caches`, but
-		// that would still rely on timing, the number of batches and
-		// operation spread over them could vary, it wouldn't run in a
-		// typical container regardless of privileges, and it would
-		// degrade performance for the rest of the machine. It would
-		// still probably be worth doing, just not the most fun.
+	// case *fuzeo.BatchForgetRequest:
+	// 	// BatchForgetRequest is hard to unit test, as it
+	// 	// fundamentally relies on something unprivileged userspace
+	// 	// has little control over. A root-only, Linux-only test could
+	// 	// be written with `echo 2 >/proc/sys/vm/drop_caches`, but
+	// 	// that would still rely on timing, the number of batches and
+	// 	// operation spread over them could vary, it wouldn't run in a
+	// 	// typical container regardless of privileges, and it would
+	// 	// degrade performance for the rest of the machine. It would
+	// 	// still probably be worth doing, just not the most fun.
 
-		// node is nil here because BatchForget as a message is not
-		// aimed at a any one node
-		for _, item := range r.Forget {
-			node, forget := c.dropNode(item.NodeID, item.N)
-			// node can be nil here if kernel vs our refcount were out
-			// of sync and multiple Forgets raced each other
-			if node == nil {
-				// nothing we can do about that
-				continue
-			}
-			if forget {
-				n, ok := node.(NodeForgetter)
-				if ok {
-					n.Forget()
-				}
-			}
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// 	// node is nil here because BatchForget as a message is not
+	// 	// aimed at a any one node
+	// 	for _, item := range r.Forget {
+	// 		node, forget := c.dropNode(item.NodeID, item.N)
+	// 		// node can be nil here if kernel vs our refcount were out
+	// 		// of sync and multiple Forgets raced each other
+	// 		if node == nil {
+	// 			// nothing we can do about that
+	// 			continue
+	// 		}
+	// 		if forget {
+	// 			n, ok := node.(NodeForgetter)
+	// 			if ok {
+	// 				n.Forget()
+	// 			}
+	// 		}
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	// Handle operations.
-	case *fuzeo.ReadRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		handle := shandle.handle
+	// // Handle operations.
+	// case *fuzeo.ReadRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	handle := shandle.handle
 
-		s := &fuzeo.ReadResponse{Data: make([]byte, 0, r.Size)}
-		if r.Dir {
-			if h, ok := handle.(HandleReadDirAller); ok {
-				// detect rewinddir(3) or similar seek and refresh
-				// contents
-				if r.Offset == 0 {
-					shandle.readData = nil
-				}
+	// 	s := &fuzeo.ReadResponse{Data: make([]byte, 0, r.Size)}
+	// 	if r.Dir {
+	// 		if h, ok := handle.(HandleReadDirAller); ok {
+	// 			// detect rewinddir(3) or similar seek and refresh
+	// 			// contents
+	// 			if r.Offset == 0 {
+	// 				shandle.readData = nil
+	// 			}
 
-				if shandle.readData == nil {
-					dirs, err := h.ReadDirAll(ctx)
-					if err != nil {
-						return err
-					}
-					var data []byte
-					for _, dir := range dirs {
-						if dir.Inode == 0 {
-							dir.Inode = c.dynamicInode(snode.inode, dir.Name)
-						}
-						data = fuzeo.AppendDirent(data, dir)
-					}
-					shandle.readData = data
-				}
-				fuzeoutil.HandleRead(r, s, shandle.readData)
-				done(s)
-				r.Respond(s)
-				return nil
-			}
-		} else {
-			if h, ok := handle.(HandleReadAller); ok {
-				if shandle.readData == nil {
-					data, err := h.ReadAll(ctx)
-					if err != nil {
-						return err
-					}
-					if data == nil {
-						data = []byte{}
-					}
-					shandle.readData = data
-				}
-				fuzeoutil.HandleRead(r, s, shandle.readData)
-				done(s)
-				r.Respond(s)
-				return nil
-			}
-			h, ok := handle.(HandleReader)
-			if !ok {
-				err := handleNotReaderError{handle: handle}
-				return err
-			}
-			if err := h.Read(ctx, r, s); err != nil {
-				return err
-			}
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// 			if shandle.readData == nil {
+	// 				dirs, err := h.ReadDirAll(ctx)
+	// 				if err != nil {
+	// 					return err
+	// 				}
+	// 				var data []byte
+	// 				for _, dir := range dirs {
+	// 					if dir.Inode == 0 {
+	// 						dir.Inode = c.dynamicInode(snode.inode, dir.Name)
+	// 					}
+	// 					data = fuzeo.AppendDirent(data, dir)
+	// 				}
+	// 				shandle.readData = data
+	// 			}
+	// 			fuzeoutil.HandleRead(r, s, shandle.readData)
+	// 			done(s)
+	// 			r.Respond(s)
+	// 			return nil
+	// 		}
+	// 	} else {
+	// 		if h, ok := handle.(HandleReadAller); ok {
+	// 			if shandle.readData == nil {
+	// 				data, err := h.ReadAll(ctx)
+	// 				if err != nil {
+	// 					return err
+	// 				}
+	// 				if data == nil {
+	// 					data = []byte{}
+	// 				}
+	// 				shandle.readData = data
+	// 			}
+	// 			fuzeoutil.HandleRead(r, s, shandle.readData)
+	// 			done(s)
+	// 			r.Respond(s)
+	// 			return nil
+	// 		}
+	// 		h, ok := handle.(HandleReader)
+	// 		if !ok {
+	// 			err := handleNotReaderError{handle: handle}
+	// 			return err
+	// 		}
+	// 		if err := h.Read(ctx, r, s); err != nil {
+	// 			return err
+	// 		}
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.WriteRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
+	// case *fuzeo.WriteRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
 
-		s := &fuzeo.WriteResponse{}
-		if h, ok := shandle.handle.(HandleWriter); ok {
-			if err := h.Write(ctx, r, s); err != nil {
-				return err
-			}
-			done(s)
-			r.Respond(s)
-			return nil
-		}
-		return syscall.EIO
+	// 	s := &fuzeo.WriteResponse{}
+	// 	if h, ok := shandle.handle.(HandleWriter); ok {
+	// 		if err := h.Write(ctx, r, s); err != nil {
+	// 			return err
+	// 		}
+	// 		done(s)
+	// 		r.Respond(s)
+	// 		return nil
+	// 	}
+	// 	return syscall.EIO
 
-	case *fuzeo.FlushRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		handle := shandle.handle
+	// case *fuzeo.FlushRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	handle := shandle.handle
 
-		if h, ok := handle.(HandleFlusher); ok {
-			if err := h.Flush(ctx, r); err != nil {
-				return err
-			}
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// 	if h, ok := handle.(HandleFlusher); ok {
+	// 		if err := h.Flush(ctx, r); err != nil {
+	// 			return err
+	// 		}
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.ReleaseRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		handle := shandle.handle
+	// case *fuzeo.ReleaseRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	handle := shandle.handle
 
-		// No matter what, release the handle.
-		c.dropHandle(r.Handle)
+	// 	// No matter what, release the handle.
+	// 	c.dropHandle(r.Handle)
 
-		if h, ok := handle.(HandleReleaser); ok {
-			if err := h.Release(ctx, r); err != nil {
-				return err
-			}
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// 	if h, ok := handle.(HandleReleaser); ok {
+	// 		if err := h.Release(ctx, r); err != nil {
+	// 			return err
+	// 		}
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.DestroyRequest:
-		if fs, ok := c.fs.(FSDestroyer); ok {
-			fs.Destroy()
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.DestroyRequest:
+	// 	if fs, ok := c.fs.(FSDestroyer); ok {
+	// 		fs.Destroy()
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.RenameRequest:
-		c.meta.Lock()
-		var newDirNode *serveNode
-		if int(r.NewDir) < len(c.node) {
-			newDirNode = c.node[r.NewDir]
-		}
-		c.meta.Unlock()
-		if newDirNode == nil {
-			c.debug(renameNewDirNodeNotFound{
-				Request: r.Hdr(),
-				In:      r,
-			})
-			return syscall.EIO
-		}
-		n, ok := node.(NodeRenamer)
-		if !ok {
-			return syscall.EIO // XXX or EPERM like Mkdir?
-		}
-		err := n.Rename(ctx, r, newDirNode.node)
-		if err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.RenameRequest:
+	// 	c.meta.Lock()
+	// 	var newDirNode *serveNode
+	// 	if int(r.NewDir) < len(c.node) {
+	// 		newDirNode = c.node[r.NewDir]
+	// 	}
+	// 	c.meta.Unlock()
+	// 	if newDirNode == nil {
+	// 		c.debug(renameNewDirNodeNotFound{
+	// 			Request: r.Hdr(),
+	// 			In:      r,
+	// 		})
+	// 		return syscall.EIO
+	// 	}
+	// 	n, ok := node.(NodeRenamer)
+	// 	if !ok {
+	// 		return syscall.EIO // XXX or EPERM like Mkdir?
+	// 	}
+	// 	err := n.Rename(ctx, r, newDirNode.node)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.MknodRequest:
-		n, ok := node.(NodeMknoder)
-		if !ok {
-			return syscall.EIO
-		}
-		n2, err := n.Mknod(ctx, r)
-		if err != nil {
-			return err
-		}
-		s := &fuzeo.LookupResponse{}
-		initLookupResponse(s)
-		if err := c.saveLookup(ctx, s, snode, r.Name, n2); err != nil {
-			return err
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.MknodRequest:
+	// 	n, ok := node.(NodeMknoder)
+	// 	if !ok {
+	// 		return syscall.EIO
+	// 	}
+	// 	n2, err := n.Mknod(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	s := &fuzeo.LookupResponse{}
+	// 	initLookupResponse(s)
+	// 	if err := c.saveLookup(ctx, s, snode, r.Name, n2); err != nil {
+	// 		return err
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.FsyncRequest:
-		n, ok := node.(NodeFsyncer)
-		if !ok {
-			return syscall.EIO
-		}
-		err := n.Fsync(ctx, r)
-		if err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.FsyncRequest:
+	// 	n, ok := node.(NodeFsyncer)
+	// 	if !ok {
+	// 		return syscall.EIO
+	// 	}
+	// 	err := n.Fsync(ctx, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.InterruptRequest:
-		c.meta.Lock()
-		ireq := c.req[r.IntrID]
-		if ireq != nil && ireq.cancel != nil {
-			ireq.cancel()
-			ireq.cancel = nil
-		}
-		c.meta.Unlock()
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.InterruptRequest:
+	// 	c.meta.Lock()
+	// 	ireq := c.req[r.IntrID]
+	// 	if ireq != nil && ireq.cancel != nil {
+	// 		ireq.cancel()
+	// 		ireq.cancel = nil
+	// 	}
+	// 	c.meta.Unlock()
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.PollRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		s := &fuzeo.PollResponse{}
+	// case *fuzeo.PollRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	s := &fuzeo.PollResponse{}
 
-		if h, ok := shandle.handle.(HandlePoller); ok {
-			if err := h.Poll(ctx, r, s); err != nil {
-				return err
-			}
-			done(s)
-			r.Respond(s)
-			return nil
-		}
+	// 	if h, ok := shandle.handle.(HandlePoller); ok {
+	// 		if err := h.Poll(ctx, r, s); err != nil {
+	// 			return err
+	// 		}
+	// 		done(s)
+	// 		r.Respond(s)
+	// 		return nil
+	// 	}
 
-		if n, ok := node.(NodePoller); ok {
-			if err := n.Poll(ctx, r, s); err != nil {
-				return err
-			}
-			done(s)
-			r.Respond(s)
-			return nil
-		}
+	// 	if n, ok := node.(NodePoller); ok {
+	// 		if err := n.Poll(ctx, r, s); err != nil {
+	// 			return err
+	// 		}
+	// 		done(s)
+	// 		r.Respond(s)
+	// 		return nil
+	// 	}
 
-		// fallback to always claim ready
-		s.REvents = fuzeo.DefaultPollMask
-		done(s)
-		r.Respond(s)
-		return nil
+	// 	// fallback to always claim ready
+	// 	s.REvents = fuzeo.DefaultPollMask
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.NotifyReply:
-		c.notifyMu.Lock()
-		w, ok := c.notifyWait[r.Hdr().ID]
-		if ok {
-			delete(c.notifyWait, r.Hdr().ID)
-		}
-		c.notifyMu.Unlock()
-		if !ok {
-			c.debug(notificationResponse{
-				ID:  r.Hdr().ID,
-				Op:  "NotifyReply",
-				Err: "unknown ID",
-			})
-			return nil
-		}
-		w <- r
-		return nil
+	// case *fuzeo.NotifyReply:
+	// 	c.notifyMu.Lock()
+	// 	w, ok := c.notifyWait[r.Hdr().ID]
+	// 	if ok {
+	// 		delete(c.notifyWait, r.Hdr().ID)
+	// 	}
+	// 	c.notifyMu.Unlock()
+	// 	if !ok {
+	// 		c.debug(notificationResponse{
+	// 			ID:  r.Hdr().ID,
+	// 			Op:  "NotifyReply",
+	// 			Err: "unknown ID",
+	// 		})
+	// 		return nil
+	// 	}
+	// 	w <- r
+	// 	return nil
 
-	case *fuzeo.LockRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		h, ok := shandle.handle.(HandleLocker)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		if err := h.Lock(ctx, r); err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.LockRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	h, ok := shandle.handle.(HandleLocker)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	if err := h.Lock(ctx, r); err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.LockWaitRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		h, ok := shandle.handle.(HandleLocker)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		if err := h.LockWait(ctx, r); err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.LockWaitRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	h, ok := shandle.handle.(HandleLocker)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	if err := h.LockWait(ctx, r); err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.UnlockRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		h, ok := shandle.handle.(HandleLocker)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		if err := h.Unlock(ctx, r); err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.UnlockRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	h, ok := shandle.handle.(HandleLocker)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	if err := h.Unlock(ctx, r); err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-	case *fuzeo.QueryLockRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		h, ok := shandle.handle.(HandleLocker)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		s := &fuzeo.QueryLockResponse{
-			Lock: fuzeo.FileLock{
-				Type: fuzeo.LockUnlock, //unix.F_UNLCK,
-			},
-		}
-		if err := h.QueryLock(ctx, r, s); err != nil {
-			return err
-		}
-		done(s)
-		r.Respond(s)
-		return nil
+	// case *fuzeo.QueryLockRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	h, ok := shandle.handle.(HandleLocker)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	s := &fuzeo.QueryLockResponse{
+	// 		Lock: fuzeo.FileLock{
+	// 			Type: fuzeo.LockUnlock, //unix.F_UNLCK,
+	// 		},
+	// 	}
+	// 	if err := h.QueryLock(ctx, r, s); err != nil {
+	// 		return err
+	// 	}
+	// 	done(s)
+	// 	r.Respond(s)
+	// 	return nil
 
-	case *fuzeo.FAllocateRequest:
-		shandle := c.getHandle(r.Handle)
-		if shandle == nil {
-			return syscall.ESTALE
-		}
-		h, ok := shandle.handle.(HandleFAllocater)
-		if !ok {
-			return syscall.ENOTSUP
-		}
-		if err := h.FAllocate(ctx, r); err != nil {
-			return err
-		}
-		done(nil)
-		r.Respond()
-		return nil
+	// case *fuzeo.FAllocateRequest:
+	// 	shandle := c.getHandle(r.Handle)
+	// 	if shandle == nil {
+	// 		return syscall.ESTALE
+	// 	}
+	// 	h, ok := shandle.handle.(HandleFAllocater)
+	// 	if !ok {
+	// 		return syscall.ENOTSUP
+	// 	}
+	// 	if err := h.FAllocate(ctx, r); err != nil {
+	// 		return err
+	// 	}
+	// 	done(nil)
+	// 	r.Respond()
+	// 	return nil
 
-		/*	case *FsyncdirRequest:
-				return ENOSYS
+	// 	/*	case *FsyncdirRequest:
+	// 			return ENOSYS
 
-			case *BmapRequest:
-				return ENOSYS
-		*/
-	}
+	// 		case *BmapRequest:
+	// 			return ENOSYS
+	// 	*/
+	// }
 }
 
 func (c *Server) saveLookup(ctx context.Context, s *fuzeo.LookupResponse, snode *serveNode, elem string, n2 Node) error {
@@ -1732,62 +1748,62 @@ func errstr(err error) string {
 	return err.Error()
 }
 
-func (s *Server) invalidateNode(node Node, off int64, size int64) error {
-	s.meta.Lock()
-	id, ok := s.nodeRef[node]
-	if ok {
-		snode := s.node[id]
-		snode.wg.Add(1)
-		defer snode.wg.Done()
-	}
-	s.meta.Unlock()
-	if !ok {
-		// This is what the kernel would have said, if we had been
-		// able to send this message; it's not cached.
-		return fuzeo.ErrNotCached
-	}
-	// Delay logging until after we can record the error too. We
-	// consider a /dev/fuzeo write to be instantaneous enough to not
-	// need separate before and after messages.
-	err := s.conn.InvalidateNode(id, off, size)
-	s.debug(notification{
-		Op:   "InvalidateNode",
-		Node: id,
-		Out: invalidateNodeDetail{
-			Off:  off,
-			Size: size,
-		},
-		Err: errstr(err),
-	})
-	return err
-}
+// func (s *Server) invalidateNode(node Node, off int64, size int64) error {
+// 	s.meta.Lock()
+// 	id, ok := s.nodeRef[node]
+// 	if ok {
+// 		snode := s.node[id]
+// 		snode.wg.Add(1)
+// 		defer snode.wg.Done()
+// 	}
+// 	s.meta.Unlock()
+// 	if !ok {
+// 		// This is what the kernel would have said, if we had been
+// 		// able to send this message; it's not cached.
+// 		return fuzeo.ErrNotCached
+// 	}
+// 	// Delay logging until after we can record the error too. We
+// 	// consider a /dev/fuzeo write to be instantaneous enough to not
+// 	// need separate before and after messages.
+// 	err := s.conn.InvalidateNode(id, off, size)
+// 	s.debug(notification{
+// 		Op:   "InvalidateNode",
+// 		Node: id,
+// 		Out: invalidateNodeDetail{
+// 			Off:  off,
+// 			Size: size,
+// 		},
+// 		Err: errstr(err),
+// 	})
+// 	return err
+// }
 
-// InvalidateNodeAttr invalidates the kernel cache of the attributes
-// of node.
-//
-// Returns fuzeo.ErrNotCached if the kernel is not currently caching
-// the node.
-func (s *Server) InvalidateNodeAttr(node Node) error {
-	return s.invalidateNode(node, 0, 0)
-}
+// // InvalidateNodeAttr invalidates the kernel cache of the attributes
+// // of node.
+// //
+// // Returns fuzeo.ErrNotCached if the kernel is not currently caching
+// // the node.
+// func (s *Server) InvalidateNodeAttr(node Node) error {
+// 	return s.invalidateNode(node, 0, 0)
+// }
 
-// InvalidateNodeData invalidates the kernel cache of the attributes
-// and data of node.
-//
-// Returns fuzeo.ErrNotCached if the kernel is not currently caching
-// the node.
-func (s *Server) InvalidateNodeData(node Node) error {
-	return s.invalidateNode(node, 0, -1)
-}
+// // InvalidateNodeData invalidates the kernel cache of the attributes
+// // and data of node.
+// //
+// // Returns fuzeo.ErrNotCached if the kernel is not currently caching
+// // the node.
+// func (s *Server) InvalidateNodeData(node Node) error {
+// 	return s.invalidateNode(node, 0, -1)
+// }
 
-// InvalidateNodeDataRange invalidates the kernel cache of the
-// attributes and a range of the data of node.
-//
-// Returns fuzeo.ErrNotCached if the kernel is not currently caching
-// the node.
-func (s *Server) InvalidateNodeDataRange(node Node, off int64, size int64) error {
-	return s.invalidateNode(node, off, size)
-}
+// // InvalidateNodeDataRange invalidates the kernel cache of the
+// // attributes and a range of the data of node.
+// //
+// // Returns fuzeo.ErrNotCached if the kernel is not currently caching
+// // the node.
+// func (s *Server) InvalidateNodeDataRange(node Node, off int64, size int64) error {
+// 	return s.invalidateNode(node, off, size)
+// }
 
 type invalidateEntryDetail struct {
 	Name string
@@ -1797,41 +1813,41 @@ func (i invalidateEntryDetail) String() string {
 	return fmt.Sprintf("%q", i.Name)
 }
 
-// InvalidateEntry invalidates the kernel cache of the directory entry
-// identified by parent node and entry basename.
-//
-// Kernel may or may not cache directory listings. To invalidate
-// those, use InvalidateNode to invalidate all of the data for a
-// directory. (As of 2015-06, Linux fuzeo does not cache directory
-// listings.)
-//
-// Returns ErrNotCached if the kernel is not currently caching the
-// node.
-func (s *Server) InvalidateEntry(parent Node, name string) error {
-	s.meta.Lock()
-	id, ok := s.nodeRef[parent]
-	if ok {
-		snode := s.node[id]
-		snode.wg.Add(1)
-		defer snode.wg.Done()
-	}
-	s.meta.Unlock()
-	if !ok {
-		// This is what the kernel would have said, if we had been
-		// able to send this message; it's not cached.
-		return fuzeo.ErrNotCached
-	}
-	err := s.conn.InvalidateEntry(id, name)
-	s.debug(notification{
-		Op:   "InvalidateEntry",
-		Node: id,
-		Out: invalidateEntryDetail{
-			Name: name,
-		},
-		Err: errstr(err),
-	})
-	return err
-}
+// // InvalidateEntry invalidates the kernel cache of the directory entry
+// // identified by parent node and entry basename.
+// //
+// // Kernel may or may not cache directory listings. To invalidate
+// // those, use InvalidateNode to invalidate all of the data for a
+// // directory. (As of 2015-06, Linux fuzeo does not cache directory
+// // listings.)
+// //
+// // Returns ErrNotCached if the kernel is not currently caching the
+// // node.
+// func (s *Server) InvalidateEntry(parent Node, name string) error {
+// 	s.meta.Lock()
+// 	id, ok := s.nodeRef[parent]
+// 	if ok {
+// 		snode := s.node[id]
+// 		snode.wg.Add(1)
+// 		defer snode.wg.Done()
+// 	}
+// 	s.meta.Unlock()
+// 	if !ok {
+// 		// This is what the kernel would have said, if we had been
+// 		// able to send this message; it's not cached.
+// 		return fuzeo.ErrNotCached
+// 	}
+// 	err := s.conn.InvalidateEntry(id, name)
+// 	s.debug(notification{
+// 		Op:   "InvalidateEntry",
+// 		Node: id,
+// 		Out: invalidateEntryDetail{
+// 			Name: name,
+// 		},
+// 		Err: errstr(err),
+// 	})
+// 	return err
+// }
 
 type notifyDeleteDetail struct {
 	ChildID fuzeo.NodeID
@@ -1842,60 +1858,60 @@ func (i notifyDeleteDetail) String() string {
 	return fmt.Sprintf("child=%v %q", i.ChildID, i.Name)
 }
 
-// NotifyDelete informs the kernel that a directory entry has been deleted.
-//
-// Using this instead of [InvalidateEntry] races on networked systems where the directory is concurrently in use.
-// See [Linux kernel commit `451d0f599934fd97faf54a5d7954b518e66192cb`] for more.
-//
-// `child` can be `nil` to delete whatever entry is found with the given name, or set to ensure only matching entry is deleted.
-//
-// Only available when [Conn.Protocol] is greater than or equal to 7.18, see [Protocol.HasNotifyDelete].
-//
-// Errors include:
-//
-//   - [ENOTDIR]: `parent` does not refer to a directory
-//   - [ENOENT]: no such entry found
-//   - [EBUSY]: entry is a mountpoint
-//   - [ENOTEMPTY]: entry is a directory, with entries inside it still cached
-//
-// [Linux kernel commit `451d0f599934fd97faf54a5d7954b518e66192cb`]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=451d0f599934fd97faf54a5d7954b518e66192cb
-func (s *Server) NotifyDelete(parent Node, child Node, name string) error {
-	s.meta.Lock()
-	parentID, parentOk := s.nodeRef[parent]
-	var childID fuzeo.NodeID = 0
-	childOk := true
-	if parentOk {
-		snode := s.node[parentID]
-		snode.wg.Add(1)
-		defer snode.wg.Done()
+// // NotifyDelete informs the kernel that a directory entry has been deleted.
+// //
+// // Using this instead of [InvalidateEntry] races on networked systems where the directory is concurrently in use.
+// // See [Linux kernel commit `451d0f599934fd97faf54a5d7954b518e66192cb`] for more.
+// //
+// // `child` can be `nil` to delete whatever entry is found with the given name, or set to ensure only matching entry is deleted.
+// //
+// // Only available when [Conn.Protocol] is greater than or equal to 7.18, see [Protocol.HasNotifyDelete].
+// //
+// // Errors include:
+// //
+// //   - [ENOTDIR]: `parent` does not refer to a directory
+// //   - [ENOENT]: no such entry found
+// //   - [EBUSY]: entry is a mountpoint
+// //   - [ENOTEMPTY]: entry is a directory, with entries inside it still cached
+// //
+// // [Linux kernel commit `451d0f599934fd97faf54a5d7954b518e66192cb`]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=451d0f599934fd97faf54a5d7954b518e66192cb
+// func (s *Server) NotifyDelete(parent Node, child Node, name string) error {
+// 	s.meta.Lock()
+// 	parentID, parentOk := s.nodeRef[parent]
+// 	var childID fuzeo.NodeID = 0
+// 	childOk := true
+// 	if parentOk {
+// 		snode := s.node[parentID]
+// 		snode.wg.Add(1)
+// 		defer snode.wg.Done()
 
-		if child != nil {
-			childID, childOk = s.nodeRef[child]
-			if childOk {
-				snode := s.node[childID]
-				snode.wg.Add(1)
-				defer snode.wg.Done()
-			}
-		}
-	}
-	s.meta.Unlock()
-	if !parentOk || !childOk {
-		// This is what the kernel would have said, if we had been
-		// able to send this message; it's not cached.
-		return fuzeo.ErrNotCached
-	}
-	err := s.conn.NotifyDelete(parentID, childID, name)
-	s.debug(notification{
-		Op:   "NotifyDelete",
-		Node: parentID,
-		Out: notifyDeleteDetail{
-			ChildID: childID,
-			Name:    name,
-		},
-		Err: errstr(err),
-	})
-	return err
-}
+// 		if child != nil {
+// 			childID, childOk = s.nodeRef[child]
+// 			if childOk {
+// 				snode := s.node[childID]
+// 				snode.wg.Add(1)
+// 				defer snode.wg.Done()
+// 			}
+// 		}
+// 	}
+// 	s.meta.Unlock()
+// 	if !parentOk || !childOk {
+// 		// This is what the kernel would have said, if we had been
+// 		// able to send this message; it's not cached.
+// 		return fuzeo.ErrNotCached
+// 	}
+// 	err := s.conn.NotifyDelete(parentID, childID, name)
+// 	s.debug(notification{
+// 		Op:   "NotifyDelete",
+// 		Node: parentID,
+// 		Out: notifyDeleteDetail{
+// 			ChildID: childID,
+// 			Name:    name,
+// 		},
+// 		Err: errstr(err),
+// 	})
+// 	return err
+// }
 
 type notifyStoreRetrieveDetail struct {
 	Off  uint64
@@ -1914,114 +1930,114 @@ func (i notifyRetrieveReplyDetail) String() string {
 	return fmt.Sprintf("Size:%d", i.Size)
 }
 
-// NotifyStore puts data into the kernel page cache.
-//
-// Returns fuzeo.ErrNotCached if the kernel is not currently caching
-// the node.
-func (s *Server) NotifyStore(node Node, offset uint64, data []byte) error {
-	s.meta.Lock()
-	id, ok := s.nodeRef[node]
-	if ok {
-		snode := s.node[id]
-		snode.wg.Add(1)
-		defer snode.wg.Done()
-	}
-	s.meta.Unlock()
-	if !ok {
-		// This is what the kernel would have said, if we had been
-		// able to send this message; it's not cached.
-		return fuzeo.ErrNotCached
-	}
-	// Delay logging until after we can record the error too. We
-	// consider a /dev/fuzeo write to be instantaneous enough to not
-	// need separate before and after messages.
-	err := s.conn.NotifyStore(id, offset, data)
-	s.debug(notification{
-		Op:   "NotifyStore",
-		Node: id,
-		Out: notifyStoreRetrieveDetail{
-			Off:  offset,
-			Size: uint64(len(data)),
-		},
-		Err: errstr(err),
-	})
-	return err
-}
+// // NotifyStore puts data into the kernel page cache.
+// //
+// // Returns fuzeo.ErrNotCached if the kernel is not currently caching
+// // the node.
+// func (s *Server) NotifyStore(node Node, offset uint64, data []byte) error {
+// 	s.meta.Lock()
+// 	id, ok := s.nodeRef[node]
+// 	if ok {
+// 		snode := s.node[id]
+// 		snode.wg.Add(1)
+// 		defer snode.wg.Done()
+// 	}
+// 	s.meta.Unlock()
+// 	if !ok {
+// 		// This is what the kernel would have said, if we had been
+// 		// able to send this message; it's not cached.
+// 		return fuzeo.ErrNotCached
+// 	}
+// 	// Delay logging until after we can record the error too. We
+// 	// consider a /dev/fuzeo write to be instantaneous enough to not
+// 	// need separate before and after messages.
+// 	err := s.conn.NotifyStore(id, offset, data)
+// 	s.debug(notification{
+// 		Op:   "NotifyStore",
+// 		Node: id,
+// 		Out: notifyStoreRetrieveDetail{
+// 			Off:  offset,
+// 			Size: uint64(len(data)),
+// 		},
+// 		Err: errstr(err),
+// 	})
+// 	return err
+// }
 
-// NotifyRetrieve gets data from the kernel page cache.
-//
-// Returns fuzeo.ErrNotCached if the kernel is not currently caching
-// the node.
-func (s *Server) NotifyRetrieve(node Node, offset uint64, size uint32) ([]byte, error) {
-	s.meta.Lock()
-	id, ok := s.nodeRef[node]
-	if ok {
-		snode := s.node[id]
-		snode.wg.Add(1)
-		defer snode.wg.Done()
-	}
-	s.meta.Unlock()
-	if !ok {
-		// This is what the kernel would have said, if we had been
-		// able to send this message; it's not cached.
-		return nil, fuzeo.ErrNotCached
-	}
+// // NotifyRetrieve gets data from the kernel page cache.
+// //
+// // Returns fuzeo.ErrNotCached if the kernel is not currently caching
+// // the node.
+// func (s *Server) NotifyRetrieve(node Node, offset uint64, size uint32) ([]byte, error) {
+// 	s.meta.Lock()
+// 	id, ok := s.nodeRef[node]
+// 	if ok {
+// 		snode := s.node[id]
+// 		snode.wg.Add(1)
+// 		defer snode.wg.Done()
+// 	}
+// 	s.meta.Unlock()
+// 	if !ok {
+// 		// This is what the kernel would have said, if we had been
+// 		// able to send this message; it's not cached.
+// 		return nil, fuzeo.ErrNotCached
+// 	}
 
-	ch := make(chan *fuzeo.NotifyReply, 1)
-	s.notifyMu.Lock()
-	const wraparoundThreshold = 1 << 63
-	if s.notifySeq > wraparoundThreshold {
-		s.notifyMu.Unlock()
-		return nil, errors.New("running out of notify sequence numbers")
-	}
-	s.notifySeq++
-	seq := s.notifySeq
-	s.notifyWait[seq] = ch
-	s.notifyMu.Unlock()
+// 	ch := make(chan *fuzeo.NotifyReply, 1)
+// 	s.notifyMu.Lock()
+// 	const wraparoundThreshold = 1 << 63
+// 	if s.notifySeq > wraparoundThreshold {
+// 		s.notifyMu.Unlock()
+// 		return nil, errors.New("running out of notify sequence numbers")
+// 	}
+// 	s.notifySeq++
+// 	seq := s.notifySeq
+// 	s.notifyWait[seq] = ch
+// 	s.notifyMu.Unlock()
 
-	s.debug(notificationRequest{
-		ID:   seq,
-		Op:   "NotifyRetrieve",
-		Node: id,
-		Out: notifyStoreRetrieveDetail{
-			Off:  offset,
-			Size: uint64(size),
-		},
-	})
-	retrieval, err := s.conn.NotifyRetrieve(seq, id, offset, size)
-	if err != nil {
-		s.debug(notificationResponse{
-			ID:  seq,
-			Op:  "NotifyRetrieve",
-			Err: errstr(err),
-		})
-		return nil, err
-	}
+// 	s.debug(notificationRequest{
+// 		ID:   seq,
+// 		Op:   "NotifyRetrieve",
+// 		Node: id,
+// 		Out: notifyStoreRetrieveDetail{
+// 			Off:  offset,
+// 			Size: uint64(size),
+// 		},
+// 	})
+// 	retrieval, err := s.conn.NotifyRetrieve(seq, id, offset, size)
+// 	if err != nil {
+// 		s.debug(notificationResponse{
+// 			ID:  seq,
+// 			Op:  "NotifyRetrieve",
+// 			Err: errstr(err),
+// 		})
+// 		return nil, err
+// 	}
 
-	reply := <-ch
-	data := retrieval.Finish(reply)
-	s.debug(notificationResponse{
-		ID: seq,
-		Op: "NotifyRetrieve",
-		In: notifyRetrieveReplyDetail{
-			Size: uint64(len(data)),
-		},
-	})
-	return data, nil
-}
+// 	reply := <-ch
+// 	data := retrieval.Finish(reply)
+// 	s.debug(notificationResponse{
+// 		ID: seq,
+// 		Op: "NotifyRetrieve",
+// 		In: notifyRetrieveReplyDetail{
+// 			Size: uint64(len(data)),
+// 		},
+// 	})
+// 	return data, nil
+// }
 
-func (s *Server) NotifyPollWakeup(wakeup fuzeo.PollWakeup) error {
-	// Delay logging until after we can record the error too. We
-	// consider a /dev/fuzeo write to be instantaneous enough to not
-	// need separate before and after messages.
-	err := s.conn.NotifyPollWakeup(wakeup)
-	s.debug(notification{
-		Op:  "NotifyPollWakeup",
-		Out: wakeup,
-		Err: errstr(err),
-	})
-	return err
-}
+// func (s *Server) NotifyPollWakeup(wakeup fuzeo.PollWakeup) error {
+// 	// Delay logging until after we can record the error too. We
+// 	// consider a /dev/fuzeo write to be instantaneous enough to not
+// 	// need separate before and after messages.
+// 	err := s.conn.NotifyPollWakeup(wakeup)
+// 	s.debug(notification{
+// 		Op:  "NotifyPollWakeup",
+// 		Out: wakeup,
+// 		Err: errstr(err),
+// 	})
+// 	return err
+// }
 
 // DataHandle returns a read-only Handle that satisfies reads
 // using the given data.
