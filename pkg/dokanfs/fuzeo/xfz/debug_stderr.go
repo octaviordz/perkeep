@@ -5,7 +5,7 @@
 //go:build debug
 // +build debug
 
-package fs
+package xfz
 
 import (
 	"log"

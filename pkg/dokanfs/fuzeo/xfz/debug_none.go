@@ -5,7 +5,7 @@
 //go:build !debug
 // +build !debug
 
-package fs
+package xfz
 
 const isDebug = false //nolint
 

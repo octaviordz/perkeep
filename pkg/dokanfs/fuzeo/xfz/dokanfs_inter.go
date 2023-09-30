@@ -1,7 +1,7 @@
 //go:build windows
 // +build windows
 
-package fs
+package xfz
 
 import (
 	"context"
@@ -13,8 +13,6 @@ import (
 	"github.com/keybase/client/go/kbfs/dokan"
 	"github.com/keybase/client/go/kbfs/dokan/winacl"
 	"golang.org/x/sys/windows/registry"
-	"perkeep.org/pkg/dokanfs/fuzeo"
-	"perkeep.org/pkg/dokanfs/fuzeo/annex"
 )
 
 var _ dokan.FileSystem = fileSystemInter{}
@@ -70,11 +68,60 @@ func (t fileSystemInter) Printf(string, ...interface{}) {
 
 func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd *dokan.CreateData) (dokan.File, dokan.CreateStatus, error) {
 	debug("RFS.CreateFile")
+	// fuzeo.Request{}
+	request := &RequestCreateFile{
+		FileInfo:   fi,
+		CreateData: cd,
+	}
+	// openRequest := fuzeo.OpenRequest{
+	// 	Header: header,
+	// 	Dir:    cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory,
+	// 	Flags:  fuzeo.OpenReadOnly,
+	// }
+	// // Return true if OpenReadOnly is set.
+	// func (fl OpenFlags) IsReadOnly() bool {
+	// 	return fl&OpenAccessModeMask == OpenReadOnly
+	// }
+
+	// // Return true if OpenWriteOnly is set.
+	// func (fl OpenFlags) IsWriteOnly() bool {
+	// 	return fl&OpenAccessModeMask == OpenWriteOnly
+	// }
+
+	// // Return true if OpenReadWrite is set.
+	// func (fl OpenFlags) IsReadWrite() bool {
+	// 	return fl&OpenAccessModeMask == OpenReadWrite
+	// }
+
+	// case opOpendir, opOpen:
+	// 	in := (*openIn)(m.data())
+	// 	if m.len() < unsafe.Sizeof(*in) {
+	// 		goto corrupt
+	// 	}
+	// 	req = &OpenRequest{
+	// 		Header: m.Header(),
+	// 		Dir:    m.hdr.Opcode == opOpendir,
+	// 		Flags:  openFlags(in.Flags),
+	// 	}
+
+	//TODO(ORC): Process response.
+	resp, err := WriteRequest(ctx, request, func(reqId RequestID) {
+		request.hdr = &Header{
+			ID: reqId,
+		}
+	})
+	debug(resp)
+
+	if err != nil {
+		return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
+	}
+
 	if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
 		cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
 
 		return emptyFile{}, dokan.CreateStatus(dokan.ErrAccessDenied), nil
 	}
+
 	return emptyFile{}, dokan.ExistingDir, nil
 }
 
@@ -189,9 +236,22 @@ func getRegistoryEntry(name string) (registry.Key, error) {
 func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern string, fillStatCallback func(*dokan.NamedStat) error) error {
 	debug("emptyFile.FindFiles")
 	fmt.Printf("FindFiles fi.Path() : %s\n", fi.Path())
-
-	fuzeo.Request{}
-	annex.RequestFindFiles(ctx, fi, fillStatCallback)
+	request := &RequestFindFiles{
+		FileInfo:         fi,
+		Pattern:          pattern,
+		FillStatCallback: fillStatCallback,
+	}
+	_, err := WriteRequest(ctx, request, func(reqId RequestID) {
+		request.hdr = &Header{
+			ID: reqId,
+		}
+	})
+	if err != nil {
+		return err
+	}
+	// readResp := resp.(fuzeo.ReadResponse)
+	// debug(readResp)
+	// debug(readResp.Data)
 
 	namedStat := dokan.NamedStat{
 		Name:      "",
