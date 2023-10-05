@@ -14,6 +14,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/keybase/kbfs/dokan"
 	"perkeep.org/pkg/dokanfs/fuzeo/xfz"
 )
 
@@ -159,9 +160,6 @@ type Header struct {
 	Uid  uint32    // user ID of process making request
 	Gid  uint32    // group ID of process making request
 	Pid  uint32    // process ID of process making request
-
-	// for returning to reqPool
-	msg *message
 }
 
 func (h *Header) String() string {
@@ -172,17 +170,21 @@ func (h *Header) Hdr() *Header {
 	return h
 }
 
-func (h *Header) noResponse() {
-	putMessage(h.msg)
-}
-
 func (h *Header) respond(msg []byte) {
 	// out := (*outHeader)(unsafe.Pointer(&msg[0]))
 	// out.Unique = uint64(h.ID)
-	// h.Conn.respond(msg)
 	// putMessage(h.msg)
+}
 
-	// annex.WriteRespond(h.Conn.dev, msg)
+func (h *Header) respondi(resp xfz.Response) {
+	// out := (*outHeader)(unsafe.Pointer(&msg[0]))
+	// out.Unique = uint64(h.ID)
+
+	// h := resp.Hdr()
+	// h.ID =
+	// h.Node
+	h.Conn.respond(resp)
+	// putMessage(h.msg)
 }
 
 // An ErrorNumber is an error with a specific error number.
@@ -316,110 +318,12 @@ func allocMessage() interface{} {
 	return m
 }
 
-func getMessage(c *Conn) *message {
-	m := reqPool.Get().(*message)
-	m.conn = c
-	return m
-}
-
-func putMessage(m *message) {
-	m.buf = m.buf[:bufSize]
-	m.conn = nil
-	m.off = 0
-	reqPool.Put(m)
-}
-
 // a message represents the bytes of a single FUSE message
 type message struct {
 	conn *Conn
 	buf  []byte    // all bytes
 	hdr  *inHeader // header
 	off  int       // offset for reading additional fields
-}
-
-func (m *message) len() uintptr {
-	return uintptr(len(m.buf) - m.off)
-}
-
-func (m *message) data() unsafe.Pointer {
-	var p unsafe.Pointer
-	if m.off < len(m.buf) {
-		p = unsafe.Pointer(&m.buf[m.off])
-	}
-	return p
-}
-
-func (m *message) bytes() []byte {
-	return m.buf[m.off:]
-}
-
-func (m *message) Header() Header {
-	h := m.hdr
-	return Header{
-		Conn: m.conn,
-		ID:   RequestID(h.Unique),
-		Node: NodeID(h.Nodeid),
-		Uid:  h.Uid,
-		Gid:  h.Gid,
-		Pid:  h.Pid,
-
-		msg: m,
-	}
-}
-
-// fileMode returns a Go os.FileMode from a Unix mode.
-func fileMode(unixMode uint32) os.FileMode {
-	mode := os.FileMode(unixMode & 0o777)
-	switch unixMode & syscall.S_IFMT {
-	case syscall.S_IFREG:
-		// nothing
-	case syscall.S_IFDIR:
-		mode |= os.ModeDir
-	case syscall.S_IFCHR:
-		mode |= os.ModeCharDevice | os.ModeDevice
-	case syscall.S_IFBLK:
-		mode |= os.ModeDevice
-	case syscall.S_IFIFO:
-		mode |= os.ModeNamedPipe
-	case syscall.S_IFLNK:
-		mode |= os.ModeSymlink
-	case syscall.S_IFSOCK:
-		mode |= os.ModeSocket
-	case 0:
-		// apparently there's plenty of times when the FUSE request
-		// does not contain the file type
-		mode |= os.ModeIrregular
-	default:
-		// not just unavailable in the kernel codepath; known to
-		// kernel but unrecognized by us
-		Debug(fmt.Sprintf("unrecognized file mode type: %04o", unixMode))
-		mode |= os.ModeIrregular
-	}
-	if unixMode&syscall.S_ISUID != 0 {
-		mode |= os.ModeSetuid
-	}
-	if unixMode&syscall.S_ISGID != 0 {
-		mode |= os.ModeSetgid
-	}
-	if unixMode&syscall.S_ISVTX != 0 {
-		mode |= os.ModeSticky
-	}
-	return mode
-}
-
-type noOpcode struct {
-	Opcode uint32
-}
-
-func (m noOpcode) String() string {
-	return fmt.Sprintf("No opcode %v", m.Opcode)
-}
-
-type malformedMessage struct {
-}
-
-func (malformedMessage) String() string {
-	return "malformed message"
 }
 
 // Close closes the FUSE connection.
@@ -445,34 +349,146 @@ func (c *Conn) Protocol() Protocol {
 	return c.proto
 }
 
+func mkHeaderWithConn(xr xfz.Request, c *Conn) Header {
+	h := xr.Hdr()
+	return Header{
+		Conn: c,
+		ID:   RequestID(h.ID),
+		Node: NodeID(h.Node),
+		Uid:  uint32(h.ID),
+		// Gid:  h.Gid,
+		// Pid:  h.Pid,
+	}
+}
+
 // ReadRequest returns the next FUSE request from the kernel.
 //
 // Caller must call either Request.Respond or Request.RespondError in
 // a reasonable time. Caller must not retain Request after that call.
 func (c *Conn) ReadRequest() (Request, error) {
-	var r Request
+	var result Request
 	xr, err := xfz.ReadRequest(c.dev)
+	fmt.Printf("%v", result)
+	// map dokan -> fuzeo
+	// https://github.com/dokan-dev/dokany/wiki/FUSE
+	switch r := xr.(type) {
+	case *xfz.CreateFileRequest:
+		fmt.Printf("%v", r)
+		// fuse_operations::mknod
+		// fuse_operations::create
+		// fuse_operations::open
+		// fuse_operations::mkdir
+		// fuse_operations::opendir
+		cd := r.CreateData
+		fmt.Printf("FileInfo %v\n", r.FileInfo)
+		fmt.Printf("CreateData %v\n", cd)
+		fmt.Printf("CreateData FileAttributes %v\n", cd.FileAttributes)
+		if cd.FileAttributes&dokan.FileAttributeNormal == dokan.FileAttributeNormal &&
+			cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
 
-	switch xr.(type) {
-	case xfz.RequestCreateFile:
-		var requestCreateFile RequestCreateFile
-		requestCreateFile.BuildFrom(c, xr.(xfz.RequestCreateFile))
-		r = requestCreateFile
-	case *xfz.RequestCreateFile:
-		var requestCreateFile RequestCreateFile
-		requestCreateFile.BuildFrom(c, *xr.(*xfz.RequestCreateFile))
-		r = requestCreateFile
-	case *xfz.RequestFindFiles:
-		var requestFindFiles RequestFindFiles
-		requestFindFiles.BuildFrom(c, *xr.(*xfz.RequestFindFiles))
-		r = requestFindFiles
-	case xfz.RequestFindFiles:
-		var requestFindFiles RequestFindFiles
-		requestFindFiles.BuildFrom(c, xr.(xfz.RequestFindFiles))
-		r = requestFindFiles
+			// n, ok := node.(NodeCreater)
+			// if !ok {
+			// 	// If we send back ENOSYS, fuzeo will try mknod+open.
+			// 	return syscall.EPERM
+			// }
+			// s := &fuzeo.CreateFileResponse{
+			// 	File:         nil,
+			// 	CreateStatus: dokan.ExistingDir,
+			// }
+			// if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory {
+			// 	s = &fuzeo.CreateFileResponse{
+			// 		File:         nil,
+			// 		CreateStatus: dokan.CreateStatus(dokan.ErrAccessDenied),
+			// 	}
+			// }
+			// initLookupResponse(&s.LookupResponse)
+			// n2, h2, err := n.Create(ctx, r, s)
+			// if err != nil {
+			// 	return err
+			// }
+			// if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.Name, n2); err != nil {
+			// 	return err
+			// }
+			// s.Handle = c.saveHandle(h2)
+			// done(s)
+			// r.Respond(s)
+		} else if cd.FileAttributes&dokan.FileAttributeNormal == dokan.FileAttributeNormal &&
+			cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+
+			// // s := &fuzeo.OpenResponse{}
+			// s := &fuzeo.CreateFileResponse{
+			// 	File:         nil,
+			// 	CreateStatus: dokan.ExistingDir,
+			// }
+			// if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
+			// 	cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
+
+			// 	s = &fuzeo.CreateFileResponse{
+			// 		File:         nil,
+			// 		CreateStatus: dokan.CreateStatus(dokan.ErrAccessDenied),
+			// 	}
+			// }
+			// var h2 Handle
+			// if n, ok := node.(NodeOpener); ok {
+			// 	hh, err := n.Open(ctx, r, s)
+			// 	if err != nil {
+			// 		return err
+			// 	}
+			// 	h2 = hh
+			// } else {
+			// 	h2 = node
+			// }
+			// s.Handle = c.saveHandle(h2)
+			// done(s)
+			// r.Respond(s)
+		} else if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
+			cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
+
+		} else if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
+			cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+
+		} else if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+			// r.FileInfo = req.FileInfo
+			// r.CreateData = req.CreateData
+			req := &OpenRequest{
+				Header: mkHeaderWithConn(r, c),
+				// Dir:    m.hdr.Opcode == opOpendir,
+				Dir: cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory,
+				// Flags:  openFlags(in.Flags),
+				Flags: OpenReadOnly,
+			}
+
+			result = req
+		}
+	case *xfz.FindFilesRequest:
+		// fuse_operations::readdir
+		fmt.Printf("%v", r)
+		fi := r.FileInfo
+		fmt.Printf("FileInfo %v\n", fi)
+		fmt.Printf("FileInfo Pattern %v\n", r.Pattern)
+		in := r
+		fmt.Printf("Header (in): %v\n", in)
+		req := &ReadRequest{
+			Header: mkHeaderWithConn(r, c),
+			// Dir:    m.hdr.Opcode == opReaddir,
+			Dir:       true,
+			Handle:    HandleID(in.Fh),
+			Offset:    int64(in.Offset),
+			Size:      int(in.Size),
+			FileFlags: OpenReadOnly,
+		}
+		// if c.proto.GE(Protocol{7, 9}) {
+		// 	// req.Flags = ReadFlags(in.ReadFlags)
+		// 	req.Flags = ReadLockOwner
+		// 	// req.LockOwner = in.LockOwner
+		// 	req.LockOwner = in.LockOwner
+		// 	// req.FileFlags = openFlags(in.Flags)
+		// }
+
+		result = req
 	}
 
-	return r, err
+	return result, err
 }
 
 // Features reports the feature flags negotiated between the kernel and
@@ -482,28 +498,9 @@ func (c *Conn) Features() InitFlags {
 	return c.flags
 }
 
-func openFlags(flags uint32) OpenFlags {
-	return OpenFlags(flags)
-}
-
-type bugShortKernelWrite struct {
-	Written int64
-	Length  int64
-	Error   string
-	Stack   string
-}
-
-func (b bugShortKernelWrite) String() string {
-	return fmt.Sprintf("short kernel write: written=%d/%d error=%q stack=\n%s", b.Written, b.Length, b.Error, b.Stack)
-}
-
-type bugKernelWriteError struct {
+type xfzBugWriteError struct {
 	Error string
 	Stack string
-}
-
-func (b bugKernelWriteError) String() string {
-	return fmt.Sprintf("kernel write error: error=%q stack=\n%s", b.Error, b.Stack)
 }
 
 // safe to call even with nil error
@@ -512,6 +509,15 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func (c *Conn) respond(resp xfz.Response) {
+	if err := xfz.WriteRespond(c.dev, resp); err != nil {
+		Debug(xfzBugWriteError{
+			Error: errorString(err),
+			Stack: stack(),
+		})
+	}
 }
 
 type notCachedError struct{}
@@ -536,26 +542,6 @@ type NotifyRetrieval struct {
 	// we may want fields later, so don't let callers know it's the
 	// empty struct
 	_ struct{}
-}
-
-func (n *NotifyRetrieval) Finish(r *NotifyReply) []byte {
-	m := r.msg
-	defer putMessage(m)
-	in := (*notifyRetrieveIn)(m.data())
-	if m.len() < unsafe.Sizeof(*in) {
-		Debug(malformedMessage{})
-		return nil
-	}
-	m.off += int(unsafe.Sizeof(*in))
-	buf := m.bytes()
-	if uint32(len(buf)) < in.Size {
-		Debug(malformedMessage{})
-		return nil
-	}
-
-	data := make([]byte, in.Size)
-	copy(data, buf)
-	return data
 }
 
 // // NotifyPollWakeup sends a notification to the kernel to wake up all
@@ -1038,11 +1024,20 @@ func (r *OpenRequest) String() string {
 
 // Respond replies to the request with the given response.
 func (r *OpenRequest) Respond(resp *OpenResponse) {
-	buf := newBuffer(unsafe.Sizeof(openOut{}))
-	out := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
-	out.Fh = uint64(resp.Handle)
-	out.OpenFlags = uint32(resp.Flags)
-	r.respond(buf)
+	// buf := newBuffer(unsafe.Sizeof(openOut{}))
+	// out := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
+	// out.Fh = uint64(resp.Handle)
+	// out.OpenFlags = uint32(resp.Flags)
+
+	var outResp xfz.Response = &xfz.CreateFileResponse{
+		Header: xfz.Header{
+			ID:   xfz.RequestID(uint64(r.ID)),
+			Node: xfz.NodeID(uint64(r.Node)),
+		},
+		Handle: xfz.HandleID(resp.Handle),
+	}
+
+	r.respondi(outResp)
 }
 
 // A OpenResponse is the response to a OpenRequest.
@@ -1245,12 +1240,6 @@ func (r *ForgetRequest) String() string {
 	return fmt.Sprintf("Forget [%s] %d", &r.Header, r.N)
 }
 
-// Respond replies to the request, indicating that the forgetfulness has been recorded.
-func (r *ForgetRequest) Respond() {
-	// Don't reply to forget messages.
-	r.noResponse()
-}
-
 type BatchForgetItem struct {
 	NodeID NodeID
 	N      uint64
@@ -1274,12 +1263,6 @@ func (r *BatchForgetRequest) String() string {
 		}
 	}
 	return b.String()
-}
-
-// Respond replies to the request, indicating that the forgetfulness has been recorded.
-func (r *BatchForgetRequest) Respond() {
-	// Don't reply to forget messages.
-	r.noResponse()
 }
 
 // A Dirent represents a single directory entry.
@@ -1692,11 +1675,6 @@ type InterruptRequest struct {
 }
 
 var _ Request = (*InterruptRequest)(nil)
-
-func (r *InterruptRequest) Respond() {
-	// nothing to do here
-	r.noResponse()
-}
 
 func (r *InterruptRequest) String() string {
 	return fmt.Sprintf("Interrupt [%s] ID %v", &r.Header, r.IntrID)

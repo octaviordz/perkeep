@@ -695,7 +695,9 @@ func (c *Server) getHandle(id fuzeo.HandleID) (shandle *serveHandle) {
 }
 
 type request struct {
-	In interface{} `json:",omitempty"`
+	Op      string
+	Request *fuzeo.Header
+	In      interface{} `json:",omitempty"`
 }
 
 func (r request) String() string {
@@ -939,14 +941,12 @@ func (c *Server) serve(r fuzeo.Request) {
 
 	req := &serveRequest{Request: r, cancel: cancel}
 
-	switch r.(type) {
-	case *fuzeo.RequestCreateFile:
-		fmt.Printf("%v", r)
-	default:
-		c.debug(request{
-			In: r,
-		})
-	}
+	c.debug(request{
+		Op:      opName(r),
+		Request: r.Hdr(),
+		In:      r,
+	})
+
 	var node Node
 	var snode *serveNode
 	c.meta.Lock()
@@ -1064,7 +1064,7 @@ func (c *Server) serve(r fuzeo.Request) {
 }
 
 // handleRequest will either a) call done(s) and r.Respond(s) OR b) return an error.
-func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode, r fuzeo.Request, done func(resp interface{})) error {
+func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode, r fuzeo.Request, done func(resp any)) error {
 	// return fmt.Errorf("not implemented")
 	switch r := r.(type) {
 	default:
@@ -1072,7 +1072,6 @@ func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode,
 		// It would be inappropriate to return ENOSYS for other operations in this
 		// switch that might only be unavailable in some contexts, not all.
 		return syscall.ENOSYS
-
 	case *fuzeo.StatfsRequest:
 		s := &fuzeo.StatfsResponse{}
 		if fs, ok := c.fs.(FSStatfser); ok {
@@ -1337,50 +1336,6 @@ func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode,
 		r.Respond()
 		return nil
 
-	case *fuzeo.ForgetRequest:
-		_, forget := c.dropNode(r.Hdr().Node, r.N)
-		if forget {
-			n, ok := node.(NodeForgetter)
-			if ok {
-				n.Forget()
-			}
-		}
-		done(nil)
-		r.Respond()
-		return nil
-
-	case *fuzeo.BatchForgetRequest:
-		// BatchForgetRequest is hard to unit test, as it
-		// fundamentally relies on something unprivileged userspace
-		// has little control over. A root-only, Linux-only test could
-		// be written with `echo 2 >/proc/sys/vm/drop_caches`, but
-		// that would still rely on timing, the number of batches and
-		// operation spread over them could vary, it wouldn't run in a
-		// typical container regardless of privileges, and it would
-		// degrade performance for the rest of the machine. It would
-		// still probably be worth doing, just not the most fun.
-
-		// node is nil here because BatchForget as a message is not
-		// aimed at a any one node
-		for _, item := range r.Forget {
-			node, forget := c.dropNode(item.NodeID, item.N)
-			// node can be nil here if kernel vs our refcount were out
-			// of sync and multiple Forgets raced each other
-			if node == nil {
-				// nothing we can do about that
-				continue
-			}
-			if forget {
-				n, ok := node.(NodeForgetter)
-				if ok {
-					n.Forget()
-				}
-			}
-		}
-		done(nil)
-		r.Respond()
-		return nil
-
 	// Handle operations.
 	case *fuzeo.ReadRequest:
 		shandle := c.getHandle(r.Handle)
@@ -1560,18 +1515,6 @@ func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode,
 		if err != nil {
 			return err
 		}
-		done(nil)
-		r.Respond()
-		return nil
-
-	case *fuzeo.InterruptRequest:
-		c.meta.Lock()
-		ireq := c.req[r.IntrID]
-		if ireq != nil && ireq.cancel != nil {
-			ireq.cancel()
-			ireq.cancel = nil
-		}
-		c.meta.Unlock()
 		done(nil)
 		r.Respond()
 		return nil

@@ -69,7 +69,7 @@ func (t fileSystemInter) Printf(string, ...interface{}) {
 func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd *dokan.CreateData) (dokan.File, dokan.CreateStatus, error) {
 	debug("RFS.CreateFile")
 	// fuzeo.Request{}
-	request := &RequestCreateFile{
+	request := &CreateFileRequest{
 		FileInfo:   fi,
 		CreateData: cd,
 	}
@@ -105,15 +105,14 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	// 	}
 
 	//TODO(ORC): Process response.
-	resp, err := WriteRequest(ctx, request, func(reqId RequestID) {
-		request.hdr = &Header{
-			ID: reqId,
-		}
-	})
+	resp, err := WriteRequest(ctx, request)
 	debug(resp)
 
+	r := resp.(*CreateFileResponse)
+
 	if err != nil {
-		return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
+		// return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
+		return emptyFile{}, r.CreateStatus, err
 	}
 
 	if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
@@ -236,16 +235,12 @@ func getRegistoryEntry(name string) (registry.Key, error) {
 func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern string, fillStatCallback func(*dokan.NamedStat) error) error {
 	debug("emptyFile.FindFiles")
 	fmt.Printf("FindFiles fi.Path() : %s\n", fi.Path())
-	request := &RequestFindFiles{
+	request := &FindFilesRequest{
 		FileInfo:         fi,
 		Pattern:          pattern,
 		FillStatCallback: fillStatCallback,
 	}
-	_, err := WriteRequest(ctx, request, func(reqId RequestID) {
-		request.hdr = &Header{
-			ID: reqId,
-		}
-	})
+	_, err := WriteRequest(ctx, request)
 	if err != nil {
 		return err
 	}
