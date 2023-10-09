@@ -14,7 +14,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/keybase/kbfs/dokan"
 	"perkeep.org/pkg/dokanfs/fuzeo/xfz"
 )
 
@@ -168,6 +167,10 @@ func (h *Header) String() string {
 
 func (h *Header) Hdr() *Header {
 	return h
+}
+
+func (h *Header) noResponse() {
+	// putMessage(h.msg)
 }
 
 func (h *Header) respond(msg []byte) {
@@ -367,114 +370,31 @@ func mkHeaderWithConn(xr xfz.Request, c *Conn) Header {
 // a reasonable time. Caller must not retain Request after that call.
 func (c *Conn) ReadRequest() (Request, error) {
 	var result Request
+
 	xr, err := xfz.ReadRequest(c.dev)
 	fmt.Printf("%v", result)
 	// map dokan -> fuzeo
 	// https://github.com/dokan-dev/dokany/wiki/FUSE
 	switch r := xr.(type) {
-	case *xfz.CreateFileRequest:
+	// case *xfz.CreateFileRequest:
+	case *xfz.OpenRequest:
 		fmt.Printf("%v", r)
-		// fuse_operations::mknod
-		// fuse_operations::create
-		// fuse_operations::open
-		// fuse_operations::mkdir
-		// fuse_operations::opendir
-		cd := r.CreateData
-		fmt.Printf("FileInfo %v\n", r.FileInfo)
-		fmt.Printf("CreateData %v\n", cd)
-		fmt.Printf("CreateData FileAttributes %v\n", cd.FileAttributes)
-		if cd.FileAttributes&dokan.FileAttributeNormal == dokan.FileAttributeNormal &&
-			cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
-
-			// n, ok := node.(NodeCreater)
-			// if !ok {
-			// 	// If we send back ENOSYS, fuzeo will try mknod+open.
-			// 	return syscall.EPERM
-			// }
-			// s := &fuzeo.CreateFileResponse{
-			// 	File:         nil,
-			// 	CreateStatus: dokan.ExistingDir,
-			// }
-			// if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory {
-			// 	s = &fuzeo.CreateFileResponse{
-			// 		File:         nil,
-			// 		CreateStatus: dokan.CreateStatus(dokan.ErrAccessDenied),
-			// 	}
-			// }
-			// initLookupResponse(&s.LookupResponse)
-			// n2, h2, err := n.Create(ctx, r, s)
-			// if err != nil {
-			// 	return err
-			// }
-			// if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.Name, n2); err != nil {
-			// 	return err
-			// }
-			// s.Handle = c.saveHandle(h2)
-			// done(s)
-			// r.Respond(s)
-		} else if cd.FileAttributes&dokan.FileAttributeNormal == dokan.FileAttributeNormal &&
-			cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-
-			// // s := &fuzeo.OpenResponse{}
-			// s := &fuzeo.CreateFileResponse{
-			// 	File:         nil,
-			// 	CreateStatus: dokan.ExistingDir,
-			// }
-			// if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
-			// 	cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
-
-			// 	s = &fuzeo.CreateFileResponse{
-			// 		File:         nil,
-			// 		CreateStatus: dokan.CreateStatus(dokan.ErrAccessDenied),
-			// 	}
-			// }
-			// var h2 Handle
-			// if n, ok := node.(NodeOpener); ok {
-			// 	hh, err := n.Open(ctx, r, s)
-			// 	if err != nil {
-			// 		return err
-			// 	}
-			// 	h2 = hh
-			// } else {
-			// 	h2 = node
-			// }
-			// s.Handle = c.saveHandle(h2)
-			// done(s)
-			// r.Respond(s)
-		} else if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
-			cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
-
-		} else if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
-			cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-
-		} else if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-			// r.FileInfo = req.FileInfo
-			// r.CreateData = req.CreateData
-			req := &OpenRequest{
-				Header: mkHeaderWithConn(r, c),
-				// Dir:    m.hdr.Opcode == opOpendir,
-				Dir: cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory,
-				// Flags:  openFlags(in.Flags),
-				Flags: OpenReadOnly,
-			}
-
-			result = req
+		req := &OpenRequest{
+			Header:    mkHeaderWithConn(r, c),
+			Dir:       r.Dir,
+			Flags:     OpenFlags(r.Flags),
+			OpenFlags: OpenRequestFlags(r.OpenFlags),
 		}
-	case *xfz.FindFilesRequest:
-		// fuse_operations::readdir
+		result = req
+	case *xfz.ReadRequest:
 		fmt.Printf("%v", r)
-		fi := r.FileInfo
-		fmt.Printf("FileInfo %v\n", fi)
-		fmt.Printf("FileInfo Pattern %v\n", r.Pattern)
-		in := r
 		fmt.Printf("Header (in): %v\n", in)
 		req := &ReadRequest{
-			Header: mkHeaderWithConn(r, c),
-			// Dir:    m.hdr.Opcode == opReaddir,
-			Dir:       true,
-			Handle:    HandleID(in.Fh),
-			Offset:    int64(in.Offset),
-			Size:      int(in.Size),
+			Header:    mkHeaderWithConn(r, c),
+			Dir:       r.Dir,
+			Handle:    HandleID(r.Handle),
+			Offset:    int64(r.Offset),
+			Size:      int(r.Size),
 			FileFlags: OpenReadOnly,
 		}
 		// if c.proto.GE(Protocol{7, 9}) {
@@ -1029,7 +949,7 @@ func (r *OpenRequest) Respond(resp *OpenResponse) {
 	// out.Fh = uint64(resp.Handle)
 	// out.OpenFlags = uint32(resp.Flags)
 
-	var outResp xfz.Response = &xfz.CreateFileResponse{
+	var outResp xfz.Response = &xfz.CreateFileAnswer{
 		Header: xfz.Header{
 			ID:   xfz.RequestID(uint64(r.ID)),
 			Node: xfz.NodeID(uint64(r.Node)),

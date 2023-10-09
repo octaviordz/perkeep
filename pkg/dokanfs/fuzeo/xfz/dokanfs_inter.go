@@ -69,7 +69,7 @@ func (t fileSystemInter) Printf(string, ...interface{}) {
 func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd *dokan.CreateData) (dokan.File, dokan.CreateStatus, error) {
 	debug("RFS.CreateFile")
 	// fuzeo.Request{}
-	request := &CreateFileRequest{
+	directive := &CreateFileDirective{
 		FileInfo:   fi,
 		CreateData: cd,
 	}
@@ -105,10 +105,10 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	// 	}
 
 	//TODO(ORC): Process response.
-	resp, err := WriteRequest(ctx, request)
-	debug(resp)
+	answer, err := PostDirective(ctx, directive)
+	debug(answer)
 
-	r := resp.(*CreateFileResponse)
+	r := answer.(*CreateFileAnswer)
 
 	if err != nil {
 		// return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
@@ -235,12 +235,12 @@ func getRegistoryEntry(name string) (registry.Key, error) {
 func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern string, fillStatCallback func(*dokan.NamedStat) error) error {
 	debug("emptyFile.FindFiles")
 	fmt.Printf("FindFiles fi.Path() : %s\n", fi.Path())
-	request := &FindFilesRequest{
+	directive := &FindFilesDirective{
 		FileInfo:         fi,
 		Pattern:          pattern,
 		FillStatCallback: fillStatCallback,
 	}
-	_, err := WriteRequest(ctx, request)
+	_, err := PostDirective(ctx, directive)
 	if err != nil {
 		return err
 	}
