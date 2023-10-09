@@ -371,7 +371,7 @@ func mkHeaderWithConn(xr xfz.Request, c *Conn) Header {
 func (c *Conn) ReadRequest() (Request, error) {
 	var result Request
 
-	xr, err := xfz.ReadRequest(c.dev)
+	xr, err := xfz.Requests.ReadRequest(c.dev)
 	fmt.Printf("%v", result)
 	// map dokan -> fuzeo
 	// https://github.com/dokan-dev/dokany/wiki/FUSE
@@ -388,7 +388,7 @@ func (c *Conn) ReadRequest() (Request, error) {
 		result = req
 	case *xfz.ReadRequest:
 		fmt.Printf("%v", r)
-		fmt.Printf("Header (in): %v\n", in)
+		//fmt.Printf("Header (in): %v\n", in)
 		req := &ReadRequest{
 			Header:    mkHeaderWithConn(r, c),
 			Dir:       r.Dir,
@@ -432,7 +432,7 @@ func errorString(err error) string {
 }
 
 func (c *Conn) respond(resp xfz.Response) {
-	if err := xfz.WriteRespond(c.dev, resp); err != nil {
+	if err := xfz.Requests.WriteRespond(c.dev, resp); err != nil {
 		Debug(xfzBugWriteError{
 			Error: errorString(err),
 			Stack: stack(),
@@ -949,15 +949,21 @@ func (r *OpenRequest) Respond(resp *OpenResponse) {
 	// out.Fh = uint64(resp.Handle)
 	// out.OpenFlags = uint32(resp.Flags)
 
-	var outResp xfz.Response = &xfz.CreateFileAnswer{
-		Header: xfz.Header{
-			ID:   xfz.RequestID(uint64(r.ID)),
-			Node: xfz.NodeID(uint64(r.Node)),
-		},
-		Handle: xfz.HandleID(resp.Handle),
-	}
+	// var outResp xfz.Response = &xfz.CreateFileAnswer{
+	// 	Header: xfz.Header{
+	// 		ID:   xfz.RequestID(uint64(r.ID)),
+	// 		Node: xfz.NodeID(uint64(r.Node)),
+	// 	},
+	// 	Handle: xfz.HandleID(resp.Handle),
+	// }
 
-	r.respondi(outResp)
+	// r.respondi(outResp)
+
+	// buf := newBuffer(unsafe.Sizeof(openOut{}))
+	// out := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
+	// out.Fh = uint64(resp.Handle)
+	// out.OpenFlags = uint32(resp.Flags)
+	// r.respond(buf)
 }
 
 // A OpenResponse is the response to a OpenRequest.

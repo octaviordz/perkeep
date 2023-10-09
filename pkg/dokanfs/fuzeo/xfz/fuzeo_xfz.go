@@ -1892,6 +1892,7 @@ type OpenRequest struct {
 	Header `json:"-"`
 	Dir    bool // is this Opendir?
 	Flags  OpenFlags
+	OpenFlags OpenRequestFlags
 }
 
 var _ = Request(&OpenRequest{})
@@ -2695,16 +2696,17 @@ func (r *ExchangeDataRequest) Respond() {
 
 func mkHeaderFromDirective(directive Directive) Header {
 	h := directive.Hdr()
+	node := makeNodeIdFromFileInfo(h.FileInfo)
 	return Header{
 		ID:   RequestID(h.ID),
-		Node: NodeID(h.Node),
+		Node: NodeID(node),
 		// Uid:  uint32(h.ID),
 		// Gid:  h.Gid,
 		// Pid:  h.Pid,
 	}
 }
 
-func convertDirectiveToRequest(directive Directive) {
+func convertDirectiveToRequest(directive Directive) Request {
 	var result Request
 
 	fmt.Printf("%v", result)
@@ -2827,11 +2829,6 @@ func convertDirectiveToRequest(directive Directive) {
 		result = req
 	}
 
-	return result, err
-}
-
-func ReadRequest(fd *os.File) (Request, error) {
-	req := <-reqBuffer
-
-	return req, nil
+	// return result, err
+	return result
 }

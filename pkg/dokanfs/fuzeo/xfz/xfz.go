@@ -140,34 +140,55 @@ func (*directiveModule) WriteAnswer(fd *os.File, answer Answer) error {
 	return nil
 }
 
-type mrequest struct {
+type requestModule struct {
+	nodes      map[string]NodeID
+	nodesMutex sync.Mutex
+
+	inBuffer   chan Request
+	outBuffer  chan Response
+	idSequence uint64
+
+	requests      map[RequestID]Request
+	requestsMutex sync.Mutex
 }
 
-var Requests mrequest
+// var reqBuffer = make(chan Request, 20)
+// var respBuffer = make(chan Response, 20)
+// var requestIdSequence uint64 = 0
 
-func (*mrequest) WriteRequest(ctx context.Context, req Request) (Response, error) {
+// var requests = make(map[RequestID]Request)
+// var requestsMutex sync.Mutex
+
+var Requests = &requestModule{
+	nodes:      make(map[string]NodeID),
+	inBuffer:   make(chan Request, 20),
+	outBuffer:  make(chan Response, 20),
+	idSequence: 0,
+	requests:   make(map[RequestID]Request),
+}
+
+func (m *requestModule) WriteRequest(ctx context.Context, req Request) (Response, error) {
 	var resp Response
-	// requestId := putRequest(req)
-	// nodeId := putNodeId(req)
+	requestId := m.putRequest(req)
+	nodeId := m.putNodeId(req)
+	h := req.Hdr()
+	h.ID = requestId
+	h.Node = nodeId
 
-	// req.putHdr(&Header{
-	// 	ID:   requestId,
-	// 	Node: nodeId,
-	// })
-	// reqBuffer <- req
-	// for {
-	// 	resp = <-respBuffer
-	// 	h := resp.Hdr()
-	// 	if h.ID == requestId {
-	// 		break
-	// 	}
-	// 	respBuffer <- resp
-	// }
+	m.inBuffer <- req
+	for {
+		resp = <-m.outBuffer
+		h := resp.Hdr()
+		if h.ID == requestId {
+			break
+		}
+		m.outBuffer <- resp
+	}
 
 	return resp, nil
 }
 
-func (*mrequest) WriteRespond(fd *os.File, resp Response) error {
+func (*requestModule) WriteRespond(fd *os.File, resp Response) error {
 
 	// switch r := (resp).(type) {
 	// case *CreateFileAnswer:
@@ -202,32 +223,25 @@ func (*mrequest) WriteRespond(fd *os.File, resp Response) error {
 	return nil
 }
 
-func (*mrequest) ReadRequest(fd *os.File) (Request, error) {
-	req := <-reqBuffer
+func (m *requestModule) ReadRequest(fd *os.File) (Request, error) {
+	req := <-m.inBuffer
 
 	return req, nil
 }
 
-var reqBuffer = make(chan Request, 20)
-var respBuffer = make(chan Response, 20)
-var requestIdSequence uint64 = 0
-
-var requests = make(map[RequestID]Request)
-var requestsMutex sync.Mutex
-
-func putRequest(req Request) RequestID {
-	rid := atomic.AddUint64(&requestIdSequence, 1)
+func (m *requestModule) putRequest(req Request) RequestID {
+	rid := atomic.AddUint64(&(m.idSequence), 1)
 	id := RequestID(rid)
-	requestsMutex.Lock()
-	defer requestsMutex.Unlock()
-	requests[id] = req
+	m.requestsMutex.Lock()
+	defer m.requestsMutex.Unlock()
+	m.requests[id] = req
 	return id
 }
 
-func getRequest(id RequestID) Request {
-	requestsMutex.Lock()
-	defer requestsMutex.Unlock()
-	return requests[id]
+func (m *requestModule) getRequest(id RequestID) Request {
+	m.requestsMutex.Lock()
+	defer m.requestsMutex.Unlock()
+	return m.requests[id]
 }
 
 // answer reaction
@@ -300,19 +314,16 @@ func mapRequestType(
 	// }
 }
 
-var nodes = make(map[string]NodeID)
-var nodesMutex sync.Mutex
-
 func makeNodeIdFromFileInfo(fi *dokan.FileInfo) NodeID {
 	var nid *NodeID = nil
 	path := fi.Path()
 
-	nodesMutex.Lock()
-	defer nodesMutex.Unlock()
-	nodeId, ok := nodes[path]
+	Requests.nodesMutex.Lock()
+	defer Requests.nodesMutex.Unlock()
+	nodeId, ok := Requests.nodes[path]
 	if !ok {
-		nodeId = NodeID(len(nodes) + 1)
-		nodes[path] = nodeId
+		nodeId = NodeID(len(Requests.nodes) + 1)
+		Requests.nodes[path] = nodeId
 	}
 	nid = &nodeId
 
@@ -322,17 +333,17 @@ func makeNodeIdFromFileInfo(fi *dokan.FileInfo) NodeID {
 	return *nid
 }
 
-func putNodeId(req Request) NodeID {
+func (m *requestModule) putNodeId(req Request) NodeID {
 	var nid *NodeID = nil
 	onFileInfo := func(req *Request, fi *dokan.FileInfo) {
 		path := fi.Path()
 
-		nodesMutex.Lock()
-		defer nodesMutex.Unlock()
-		nodeId, ok := nodes[path]
+		m.nodesMutex.Lock()
+		defer m.nodesMutex.Unlock()
+		nodeId, ok := m.nodes[path]
 		if !ok {
-			nodeId = NodeID(len(nodes) + 1)
-			nodes[path] = nodeId
+			nodeId = NodeID(len(m.nodes) + 1)
+			m.nodes[path] = nodeId
 		}
 		nid = &nodeId
 	}

@@ -105,7 +105,7 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	// 	}
 
 	//TODO(ORC): Process response.
-	answer, err := PostDirective(ctx, directive)
+	answer, err := directivem.PostDirective(ctx, directive)
 	debug(answer)
 
 	r := answer.(*CreateFileAnswer)
@@ -240,7 +240,7 @@ func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern st
 		Pattern:          pattern,
 		FillStatCallback: fillStatCallback,
 	}
-	_, err := PostDirective(ctx, directive)
+	_, err := directivem.PostDirective(ctx, directive)
 	if err != nil {
 		return err
 	}
