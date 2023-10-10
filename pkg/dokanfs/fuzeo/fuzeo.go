@@ -182,10 +182,7 @@ func (h *Header) respond(msg []byte) {
 func (h *Header) respondi(resp xfz.Response) {
 	// out := (*outHeader)(unsafe.Pointer(&msg[0]))
 	// out.Unique = uint64(h.ID)
-
-	// h := resp.Hdr()
-	// h.ID =
-	// h.Node
+	resp.PutId(uint64(h.ID))
 	h.Conn.respond(resp)
 	// putMessage(h.msg)
 }
@@ -944,26 +941,12 @@ func (r *OpenRequest) String() string {
 
 // Respond replies to the request with the given response.
 func (r *OpenRequest) Respond(resp *OpenResponse) {
-	// buf := newBuffer(unsafe.Sizeof(openOut{}))
-	// out := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
-	// out.Fh = uint64(resp.Handle)
-	// out.OpenFlags = uint32(resp.Flags)
+	var outResp xfz.Response = &xfz.OpenResponse{
+		Handle: xfz.HandleID(uint64(resp.Handle)),
+		Flags:  xfz.OpenResponseFlags(uint32(resp.Flags)),
+	}
 
-	// var outResp xfz.Response = &xfz.CreateFileAnswer{
-	// 	Header: xfz.Header{
-	// 		ID:   xfz.RequestID(uint64(r.ID)),
-	// 		Node: xfz.NodeID(uint64(r.Node)),
-	// 	},
-	// 	Handle: xfz.HandleID(resp.Handle),
-	// }
-
-	// r.respondi(outResp)
-
-	// buf := newBuffer(unsafe.Sizeof(openOut{}))
-	// out := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
-	// out.Fh = uint64(resp.Handle)
-	// out.OpenFlags = uint32(resp.Flags)
-	// r.respond(buf)
+	r.respondi(outResp)
 }
 
 // A OpenResponse is the response to a OpenRequest.

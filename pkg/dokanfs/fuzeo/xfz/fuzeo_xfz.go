@@ -1889,9 +1889,9 @@ func (r *LookupResponse) String() string {
 
 // An OpenRequest asks to open a file or directory
 type OpenRequest struct {
-	Header `json:"-"`
-	Dir    bool // is this Opendir?
-	Flags  OpenFlags
+	Header    `json:"-"`
+	Dir       bool // is this Opendir?
+	Flags     OpenFlags
 	OpenFlags OpenRequestFlags
 }
 
@@ -1912,8 +1912,19 @@ func (r *OpenRequest) Respond(resp *OpenResponse) {
 
 // A OpenResponse is the response to a OpenRequest.
 type OpenResponse struct {
+	HeaderResponse
 	Handle HandleID
 	Flags  OpenResponseFlags
+}
+
+func (r *OpenResponse) IsResponseType() {}
+
+func (r *OpenResponse) PutId(id uint64) {
+	r.Id = id
+}
+
+func (r *OpenResponse) GetId() uint64 {
+	return r.Id
 }
 
 func (r *OpenResponse) string() string {

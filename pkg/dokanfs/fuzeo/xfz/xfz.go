@@ -178,8 +178,8 @@ func (m *requestModule) WriteRequest(ctx context.Context, req Request) (Response
 	m.inBuffer <- req
 	for {
 		resp = <-m.outBuffer
-		h := resp.Hdr()
-		if h.ID == requestId {
+		id := resp.GetId()
+		if RequestID(id) == requestId {
 			break
 		}
 		m.outBuffer <- resp
@@ -250,10 +250,16 @@ type Answer interface {
 	Hdr() *Header
 }
 
+type HeaderResponse struct {
+	Id uint64
+}
+
 type Response interface {
 	IsResponseType()
+	PutId(uint64)
+	GetId() uint64
 	// Hdr returns the Header associated with this request.
-	Hdr() *Header
+	// Hdr() *Header
 
 	// RespondError responds to the request with the given error.
 	// RespondError(error)
