@@ -1686,7 +1686,7 @@ func (r *GetattrRequest) Respond(resp *GetattrResponse) {
 
 // A GetattrResponse is the response to a GetattrRequest.
 type GetattrResponse struct {
-	HeaderResponse
+	ResponseHeader
 	Attr Attr // file attributes
 }
 
@@ -1929,7 +1929,7 @@ func (r *OpenRequest) String() string {
 
 // A OpenResponse is the response to a OpenRequest.
 type OpenResponse struct {
-	HeaderResponse
+	ResponseHeader
 	Handle HandleID
 	Flags  OpenResponseFlags
 }
@@ -2743,7 +2743,7 @@ func convertDirectiveToRequest(directive Directive) Request {
 		// fuse_operations::mkdir
 		// fuse_operations::opendir
 		cd := r.CreateData
-		fmt.Printf("FileInfo %v\n", r.FileInfo)
+		fmt.Printf("FileInfo %v\n", r.hdr.FileInfo)
 		fmt.Printf("CreateData %v\n", cd)
 		fmt.Printf("CreateData FileAttributes %v\n", cd.FileAttributes)
 		if cd.FileAttributes&dokan.FileAttributeNormal == dokan.FileAttributeNormal &&

@@ -69,7 +69,9 @@ func (t fileSystemInter) Printf(string, ...interface{}) {
 func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd *dokan.CreateData) (dokan.File, dokan.CreateStatus, error) {
 	debug("RFS.CreateFile")
 	directive := &CreateFileDirective{
-		FileInfo:   fi,
+		hdr: &DirectiveHeader{
+			FileInfo: fi,
+		},
 		CreateData: cd,
 	}
 	// openRequest := fuzeo.OpenRequest{
@@ -162,25 +164,18 @@ type emptyFile struct{}
 
 func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (*dokan.Stat, error) {
 	debug("emptyFile.Getdokan.FileInformation")
-	// coarse decree
 	directive := &GetFileInformationDirective{
-		FileInfo: fi,
+		hdr: &DirectiveHeader{
+			FileInfo: fi,
+		},
 	}
 	answer, err := diesm.PostDirective(ctx, directive)
 	debug(answer)
 	debug(err)
 	if err != nil {
-
 		return nil, err
 	}
 	a := answer.(*GetFileInformationAnswer)
-	// st := dokan.Stat{
-	// 	Creation:       time.Now(),
-	// 	LastAccess:     time.Now(),
-	// 	LastWrite:      time.Now(),
-	// 	FileSize:       0,
-	// 	FileAttributes: dokan.FileAttributeDirectory,
-	// }
 	// if fi.Path() == "\\" {
 	// 	st.FileAttributes = dokan.FileAttributeDirectory
 	// 	return &st, nil
