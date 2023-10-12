@@ -105,14 +105,14 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	// 	}
 
 	//TODO(ORC): Process response.
-	answer, err := directivem.PostDirective(ctx, directive)
+	answer, err := diesm.PostDirective(ctx, directive)
 	debug(answer)
 
-	r := answer.(*CreateFileAnswer)
+	a := answer.(*CreateFileAnswer)
 
 	if err != nil {
 		// return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
-		return emptyFile{}, r.CreateStatus, err
+		return emptyFile{}, a.CreateStatus, err
 	}
 
 	if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
@@ -240,7 +240,7 @@ func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern st
 		Pattern:          pattern,
 		FillStatCallback: fillStatCallback,
 	}
-	_, err := directivem.PostDirective(ctx, directive)
+	_, err := diesm.PostDirective(ctx, directive)
 	if err != nil {
 		return err
 	}

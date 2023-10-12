@@ -1046,6 +1046,8 @@ type Request interface {
 // A RequestID identifies an active FUSE request.
 type RequestID uint64
 
+type DirectiveID RequestID
+
 func (r RequestID) String() string {
 	return fmt.Sprintf("%#x", uint64(r))
 }
@@ -1935,6 +1937,17 @@ func (r *OpenResponse) String() string {
 	return fmt.Sprintf("Open %s", r.string())
 }
 
+func (r *OpenResponse) makeAnswer() Answer {
+	a := &CreateFileAnswer{
+		Header:       mkHeaderFromResponse(r),
+		File:         emptyFile{},
+		CreateStatus: dokan.CreateStatus(0),
+		//error
+	}
+
+	return a
+}
+
 // A CreateRequest asks to create and open a file (not a directory).
 type CreateRequest struct {
 	Header `json:"-"`
@@ -2707,7 +2720,7 @@ func (r *ExchangeDataRequest) Respond() {
 
 func mkHeaderFromDirective(directive Directive) Header {
 	h := directive.Hdr()
-	node := makeNodeIdFromFileInfo(h.FileInfo)
+	node := supplyNodeIdWithFileInfo(h.FileInfo)
 	return Header{
 		ID:   RequestID(h.ID),
 		Node: NodeID(node),
@@ -2823,10 +2836,10 @@ func convertDirectiveToRequest(directive Directive) Request {
 		req := &ReadRequest{
 			Header: mkHeaderFromDirective(directive),
 			// Dir:    m.hdr.Opcode == opReaddir,
-			Dir:       true,
-			Handle:    HandleID(in.Fh),
-			Offset:    int64(in.Offset),
-			Size:      int(in.Size),
+			Dir: true,
+			// Handle:    HandleID(in.Fh),
+			// Offset:    int64(in.Offset),
+			// Size:      int(in.Size),
 			FileFlags: OpenReadOnly,
 		}
 		// if c.proto.GE(Protocol{7, 9}) {
