@@ -1686,11 +1686,35 @@ func (r *GetattrRequest) Respond(resp *GetattrResponse) {
 
 // A GetattrResponse is the response to a GetattrRequest.
 type GetattrResponse struct {
+	HeaderResponse
 	Attr Attr // file attributes
 }
 
 func (r *GetattrResponse) String() string {
 	return fmt.Sprintf("Getattr %v", r.Attr)
+}
+
+func (r *GetattrResponse) IsResponseType() {}
+func (r *GetattrResponse) PutId(id uint64) { r.Id = id }
+func (r *GetattrResponse) GetId() uint64   { return r.Id }
+
+func mkFileAttributesWithAttr(attr Attr) dokan.FileAttribute {
+	// FileAttributeReadonly = FileAttribute(0x00000001)
+	// FileAttributeHidden = FileAttribute(0x00000002)
+	// FileAttributeSystem = FileAttribute(0x00000004)
+	// FileAttributeDirectory = FileAttribute(0x00000010)
+	// FileAttributeArchive = FileAttribute(0x00000020)
+	// FileAttributeNormal = FileAttribute(0x00000080)
+	// FileAttributeReparsePoint = FileAttribute(0x00000400)
+	mode := attr.Mode
+	var fa dokan.FileAttribute
+	if mode.IsRegular() {
+		fa = fa & dokan.FileAttributeNormal
+	}
+	if mode.IsDir() {
+		fa = fa & dokan.FileAttributeDirectory
+	}
+	return fa
 }
 
 // A GetxattrRequest asks for the extended attributes associated with r.Node.
@@ -1903,30 +1927,11 @@ func (r *OpenRequest) String() string {
 	return fmt.Sprintf("Open [%s] dir=%v fl=%v", &r.Header, r.Dir, r.Flags)
 }
 
-// Respond replies to the request with the given response.
-func (r *OpenRequest) Respond(resp *OpenResponse) {
-	// buf := newBuffer(unsafe.Sizeof(openOut{}))
-	// out := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
-	// out.Fh = uint64(resp.Handle)
-	// out.OpenFlags = uint32(resp.Flags)
-	// r.respond(buf)
-}
-
 // A OpenResponse is the response to a OpenRequest.
 type OpenResponse struct {
 	HeaderResponse
 	Handle HandleID
 	Flags  OpenResponseFlags
-}
-
-func (r *OpenResponse) IsResponseType() {}
-
-func (r *OpenResponse) PutId(id uint64) {
-	r.Id = id
-}
-
-func (r *OpenResponse) GetId() uint64 {
-	return r.Id
 }
 
 func (r *OpenResponse) string() string {
@@ -1937,16 +1942,9 @@ func (r *OpenResponse) String() string {
 	return fmt.Sprintf("Open %s", r.string())
 }
 
-func (r *OpenResponse) makeAnswer() Answer {
-	a := &CreateFileAnswer{
-		Header:       mkHeaderFromResponse(r),
-		File:         emptyFile{},
-		CreateStatus: dokan.CreateStatus(0),
-		//error
-	}
-
-	return a
-}
+func (r *OpenResponse) IsResponseType() {}
+func (r *OpenResponse) PutId(id uint64) { r.Id = id }
+func (r *OpenResponse) GetId() uint64   { return r.Id }
 
 // A CreateRequest asks to create and open a file (not a directory).
 type CreateRequest struct {

@@ -68,7 +68,6 @@ func (t fileSystemInter) Printf(string, ...interface{}) {
 
 func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd *dokan.CreateData) (dokan.File, dokan.CreateStatus, error) {
 	debug("RFS.CreateFile")
-	// fuzeo.Request{}
 	directive := &CreateFileDirective{
 		FileInfo:   fi,
 		CreateData: cd,
@@ -111,17 +110,16 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	a := answer.(*CreateFileAnswer)
 
 	if err != nil {
-		// return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
-		return emptyFile{}, a.CreateStatus, err
+		return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
 	}
 
 	if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
 		cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
 
-		return emptyFile{}, dokan.CreateStatus(dokan.ErrAccessDenied), nil
+		return a.File, a.CreateStatus, nil
 	}
 
-	return emptyFile{}, dokan.ExistingDir, nil
+	return a.File, a.CreateStatus, nil
 }
 
 func (t emptyFile) CanDeleteFile(ctx context.Context, fi *dokan.FileInfo) error {
@@ -164,27 +162,30 @@ type emptyFile struct{}
 
 func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (*dokan.Stat, error) {
 	debug("emptyFile.Getdokan.FileInformation")
-	var emptyStat dokan.Stat
-
-	st := dokan.Stat{
-		Creation:       time.Now(),
-		LastAccess:     time.Now(),
-		LastWrite:      time.Now(),
-		FileSize:       0,
-		FileAttributes: dokan.FileAttributeDirectory,
+	// coarse decree
+	directive := &GetFileInformationDirective{
+		FileInfo: fi,
 	}
-	if fi.Path() == "\\" {
-		st.FileAttributes = dokan.FileAttributeDirectory
-		return &st, nil
-	}
-
-	_, err := getRegistoryEntry(fi.Path())
+	answer, err := diesm.PostDirective(ctx, directive)
+	debug(answer)
+	debug(err)
 	if err != nil {
-		return &emptyStat, err
-	}
-	st.FileAttributes = dokan.FileAttributeDirectory
 
-	return &st, nil
+		return nil, err
+	}
+	a := answer.(*GetFileInformationAnswer)
+	// st := dokan.Stat{
+	// 	Creation:       time.Now(),
+	// 	LastAccess:     time.Now(),
+	// 	LastWrite:      time.Now(),
+	// 	FileSize:       0,
+	// 	FileAttributes: dokan.FileAttributeDirectory,
+	// }
+	// if fi.Path() == "\\" {
+	// 	st.FileAttributes = dokan.FileAttributeDirectory
+	// 	return &st, nil
+	// }
+	return a.Stat, nil
 }
 
 var topDirectory = map[string]registry.Key{

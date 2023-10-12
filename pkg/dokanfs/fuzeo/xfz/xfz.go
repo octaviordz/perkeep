@@ -151,27 +151,19 @@ type requestsModule struct {
 	nodes      map[string]NodeID
 	nodesMutex sync.Mutex
 
-	// inBuffer   chan Request
-	// outBuffer  chan Response
-	idSequence uint64
-
-	requests      map[RequestID]Request
-	requestsMutex sync.Mutex
+	handles      map[HandleID]dokan.File
+	handlesMutex sync.Mutex
 }
 
-// var reqBuffer = make(chan Request, 20)
-// var respBuffer = make(chan Response, 20)
-// var requestIdSequence uint64 = 0
-
-// var requests = make(map[RequestID]Request)
-// var requestsMutex sync.Mutex
-
 var retsm = &requestsModule{
-	nodes: make(map[string]NodeID),
-	// inBuffer:   make(chan Request, 20),
-	// outBuffer:  make(chan Response, 20),
-	idSequence: 0,
-	requests:   make(map[RequestID]Request),
+	nodes:   make(map[string]NodeID),
+	handles: make(map[HandleID]dokan.File),
+}
+
+func (m *requestsModule) saveHandle(handle HandleID, file dokan.File) {
+	m.handlesMutex.Lock()
+	defer m.handlesMutex.Unlock()
+	m.handles[handle] = file
 }
 
 // func (m *requestsModule) WriteRequest(ctx context.Context, req Request) (Response, error) {
@@ -251,18 +243,37 @@ func (rrm *requestResponseModule) ReadRequest(fd *os.File) (Request, error) {
 }
 
 func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error {
-
-	a := resp.makeAnswer()
+	var answer Answer
 
 	switch r := (resp).(type) {
 	case *OpenResponse:
-		// Need to get the request to know if it's open or opendir?
 		// fuse_operations::opendir
-
 		// fuse_operations::open
+
+		// OpenDirectIO    OpenResponseFlags = 1 << 0 // bypass page cache for this open file
+		// OpenKeepCache   OpenResponseFlags = 1 << 1 // don't invalidate the data cache on open
+		// OpenNonSeekable OpenResponseFlags = 1 << 2 // mark the file as non-seekable (not supported on FreeBSD)
+		// OpenCacheDir    OpenResponseFlags = 1 << 3 // allow caching directory contents
+		// Need to get the request to know if it's open or opendir?
+		id := r.GetId()
+		directive := diesm.getDirective(DirectiveID(id))
+		d := directive.(*CreateFileDirective)
+		createStatus := dokan.ExistingFile
+		if fileInfos.isDir(d.FileInfo) {
+			createStatus = dokan.ExistingDir
+		}
+		// DOKAN_OPERATIONS::ZwCreateFile
+		a := &CreateFileAnswer{
+			Header:       mkHeaderFromResponse(r),
+			File:         emptyFile{},
+			CreateStatus: createStatus,
+		}
+		answer = a
+		// dokan.CreateStatus(dokan.ErrAccessDenied)
+
 		if r.Handle != 0 {
-			f := emptyFile{}
-			saveHandle(r.Handle, f)
+			f := a.File
+			retsm.saveHandle(r.Handle, f)
 		}
 
 		// // case *CreateFileAnswer:
@@ -290,28 +301,56 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		// 	f := emptyFile{}
 
 		// 	saveHandle(r.Handle, f)
+	case *GetattrResponse:
+		// fuse_operations::getattr
+		// DOKAN_OPERATIONS::GetFileInformation
+		// Valid time.Duration // how long Attr can be cached
+		// Inode     uint64      // inode number
+		// Size      uint64      // size in bytes
+		// Blocks    uint64      // size in 512-byte units
+		// Atime     time.Time   // time of last access
+		// Mtime     time.Time   // time of last modification
+		// Ctime     time.Time   // time of last inode change
+		// Crtime    time.Time   // time of creation (OS X only)
+		// Mode      os.FileMode // file mode
+		// Nlink     uint32      // number of links (usually 1)
+		// Uid       uint32      // owner uid
+		// Gid       uint32      // group gid
+		// Rdev      uint32      // device numbers
+		// Flags     uint32      // chflags(2) flags (OS X only)
+		// BlockSize uint32      // preferred blocksize for filesystem I/O
+		a := &GetFileInformationAnswer{
+			Header: mkHeaderFromResponse(r),
+			Stat: &dokan.Stat{
+				Creation:       r.Attr.Crtime,
+				LastAccess:     r.Attr.Atime,
+				LastWrite:      r.Attr.Mtime,
+				FileSize:       int64(r.Attr.Size),
+				FileIndex:      r.Attr.Inode,
+				FileAttributes: mkFileAttributesWithAttr(r.Attr),
+			},
+		}
+		answer = a
+		debug(a)
 	}
-	diesm.PostAnswer(fd, a)
 
-	// respBuffer <- resp
-
-	return nil
+	return diesm.PostAnswer(fd, answer)
 }
 
-func (m *requestsModule) putRequest(req Request) RequestID {
-	rid := atomic.AddUint64(&(m.idSequence), 1)
-	id := RequestID(rid)
-	m.requestsMutex.Lock()
-	defer m.requestsMutex.Unlock()
-	m.requests[id] = req
-	return id
-}
+// func (m *requestsModule) putRequest(req Request) RequestID {
+// 	rid := atomic.AddUint64(&(m.idSequence), 1)
+// 	id := RequestID(rid)
+// 	m.requestsMutex.Lock()
+// 	defer m.requestsMutex.Unlock()
+// 	m.requests[id] = req
+// 	return id
+// }
 
-func (m *requestsModule) getRequest(id RequestID) Request {
-	m.requestsMutex.Lock()
-	defer m.requestsMutex.Unlock()
-	return m.requests[id]
-}
+// func (m *requestsModule) getRequest(id RequestID) Request {
+// 	m.requestsMutex.Lock()
+// 	defer m.requestsMutex.Unlock()
+// 	return m.requests[id]
+// }
 
 // answer reaction
 type Answer interface {
@@ -334,7 +373,6 @@ type Response interface {
 	// RespondError(error)
 
 	// String() string
-	makeAnswer() Answer
 }
 
 // A Header describes the basic information sent in every request.
@@ -360,7 +398,6 @@ type Directive interface {
 
 func mkHeaderFromResponse(response Response) Header {
 	id := response.GetId()
-	// r := requestm.getRequest(RequestID(id))
 	d := diesm.getDirective(DirectiveID(id))
 	h := d.Hdr()
 	node := supplyNodeIdWithFileInfo(h.FileInfo)
@@ -383,22 +420,11 @@ func mapDirectiveType(
 	switch d := (*directive).(type) {
 	case *CreateFileDirective:
 		fileInfoCallBack(directive, d.FileInfo)
+	case *GetFileInformationDirective:
+		fileInfoCallBack(directive, d.FileInfo)
 	case *FindFilesDirective:
 		fileInfoCallBack(directive, d.FileInfo)
 	}
-}
-
-func mapRequestType(
-	req *Request,
-	fileInfoCallBack func(req *Request, fi *dokan.FileInfo),
-) {
-
-	// switch r := (*req).(type) {
-	// case *CreateFileDirective:
-	// 	fileInfoCallBack(req, r.FileInfo)
-	// case *FindFilesDirective:
-	// 	fileInfoCallBack(req, r.FileInfo)
-	// }
 }
 
 func supplyNodeIdWithFileInfo(fi *dokan.FileInfo) NodeID {
@@ -420,35 +446,36 @@ func supplyNodeIdWithFileInfo(fi *dokan.FileInfo) NodeID {
 	return *nid
 }
 
-func (m *requestsModule) putNodeId(req Request) NodeID {
-	var nid *NodeID = nil
-	onFileInfo := func(req *Request, fi *dokan.FileInfo) {
-		path := fi.Path()
+// func (m *requestsModule) putNodeId(req Request) NodeID {
+// 	var nid *NodeID = nil
+// 	onFileInfo := func(req *Request, fi *dokan.FileInfo) {
+// 		path := fi.Path()
 
-		m.nodesMutex.Lock()
-		defer m.nodesMutex.Unlock()
-		nodeId, ok := m.nodes[path]
-		if !ok {
-			nodeId = NodeID(len(m.nodes) + 1)
-			m.nodes[path] = nodeId
-		}
-		nid = &nodeId
-	}
-	mapRequestType(&req, onFileInfo)
+// 		m.nodesMutex.Lock()
+// 		defer m.nodesMutex.Unlock()
+// 		nodeId, ok := m.nodes[path]
+// 		if !ok {
+// 			nodeId = NodeID(len(m.nodes) + 1)
+// 			m.nodes[path] = nodeId
+// 		}
+// 		nid = &nodeId
+// 	}
+// 	mapRequestType(&req, onFileInfo)
 
-	if nid == nil {
-		panic("No value for NodeID.")
-	}
-	return *nid
-}
+// 	if nid == nil {
+// 		panic("No value for NodeID.")
+// 	}
+// 	return *nid
+// }
 
-var handles = make(map[HandleID]dokan.File)
-var handlesMutex sync.Mutex
+type FileInfoModule struct{}
 
-func saveHandle(handle HandleID, file dokan.File) {
-	handlesMutex.Lock()
-	defer handlesMutex.Unlock()
-	handles[handle] = file
+var fileInfos = FileInfoModule{}
+
+func (m *FileInfoModule) isDir(fi *dokan.FileInfo) (isDir bool) {
+	path := fi.Path()
+	isDir = len(path) != 0 && path[len(path)-1] == filepath.Separator
+	return
 }
 
 type CreateFileDirective struct {
@@ -560,8 +587,7 @@ func (d *CreateFileDirective) makeRequest() Request {
 		result = req
 	} else if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
 		// fuse_operations::open
-		path := d.FileInfo.Path()
-		isDir := len(path) != 0 && path[len(path)-1] == filepath.Separator
+		isDir := fileInfos.isDir(d.FileInfo)
 		// r.FileInfo = req.FileInfo
 		// r.CreateData = req.CreateData
 		req := &OpenRequest{
@@ -635,5 +661,36 @@ var _ Answer = (*FindFilesAnswer)(nil)
 func (r *FindFilesAnswer) Hdr() *Header  { return r.Header.Hdr() }
 func (r *FindFilesAnswer) IsAnswerType() {}
 
-func convertToDirective() {
+type GetFileInformationDirective struct {
+	hdr      *DirectiveHeader
+	FileInfo *dokan.FileInfo
 }
+
+var _ Directive = (*GetFileInformationDirective)(nil)
+
+func (r *GetFileInformationDirective) putHdr(header *DirectiveHeader) { r.hdr = header }
+func (r *GetFileInformationDirective) Hdr() *DirectiveHeader          { return r.hdr }
+func (r *GetFileInformationDirective) RespondError(error)             {}
+func (r *GetFileInformationDirective) String() string {
+	return fmt.Sprintf("RequestFindFiles [%s]", r.FileInfo.Path())
+}
+func (d *GetFileInformationDirective) IsDirectiveType() {}
+func (d *GetFileInformationDirective) makeRequest() Request {
+	// fuse_operations::getattr
+	req := &GetattrRequest{
+		Header: mkHeaderFromDirective(d),
+		// Handle: ,
+		Flags: GetattrFh,
+	}
+	return req
+}
+
+type GetFileInformationAnswer struct {
+	Header
+	Stat *dokan.Stat
+}
+
+var _ Answer = (*GetFileInformationAnswer)(nil)
+
+func (r *GetFileInformationAnswer) Hdr() *Header  { return r.Header.Hdr() }
+func (r *GetFileInformationAnswer) IsAnswerType() {}

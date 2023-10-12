@@ -373,7 +373,9 @@ func (c *Conn) ReadRequest() (Request, error) {
 	// map dokan -> fuzeo
 	// https://github.com/dokan-dev/dokany/wiki/FUSE
 	switch r := xr.(type) {
-	// case *xfz.CreateFileRequest:
+	default:
+		return nil, fmt.Errorf("not implemented %v", xr)
+		// case *xfz.CreateFileRequest:
 	case *xfz.OpenRequest:
 		fmt.Printf("%v", r)
 		req := &OpenRequest{
@@ -381,6 +383,14 @@ func (c *Conn) ReadRequest() (Request, error) {
 			Dir:       r.Dir,
 			Flags:     OpenFlags(r.Flags),
 			OpenFlags: OpenRequestFlags(r.OpenFlags),
+		}
+		result = req
+	case *xfz.GetattrRequest:
+		fmt.Printf("%v", r)
+		req := &GetattrRequest{
+			Header: mkHeaderWithConn(r, c),
+			Flags:  GetattrFlags(r.Flags),
+			Handle: HandleID(r.Handle),
 		}
 		result = req
 	case *xfz.ReadRequest:
