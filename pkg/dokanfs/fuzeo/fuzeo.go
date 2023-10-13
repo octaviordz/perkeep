@@ -369,7 +369,6 @@ func (c *Conn) ReadRequest() (Request, error) {
 	var result Request
 
 	xr, err := xfz.Requests.ReadRequest(c.dev)
-	fmt.Printf("%v", result)
 	// map dokan -> fuzeo
 	// https://github.com/dokan-dev/dokany/wiki/FUSE
 	switch r := xr.(type) {
@@ -415,6 +414,7 @@ func (c *Conn) ReadRequest() (Request, error) {
 		result = req
 	}
 
+	fmt.Printf("Connection ReadRequest %v. \n", result)
 	return result, err
 }
 

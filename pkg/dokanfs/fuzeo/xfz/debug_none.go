@@ -7,7 +7,7 @@
 
 package xfz
 
-const isDebug = false //nolint
+// const isDebug = false //nolint
 
-func debug(...interface{})          {} // nolint
-func debugf(string, ...interface{}) {} // nolint
+// func debug(...interface{})          {} // nolint
+// func debugf(string, ...interface{}) {} // nolint

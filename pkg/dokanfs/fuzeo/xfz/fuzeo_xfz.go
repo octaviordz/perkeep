@@ -2716,141 +2716,14 @@ func (r *ExchangeDataRequest) Respond() {
 // }
 // func (r *xfzResponse) IsResponseType() {}
 
-func mkHeaderFromDirective(directive Directive) Header {
+func makeHeaderWithDirective(directive Directive) Header {
 	h := directive.Hdr()
-	node := supplyNodeIdWithFileInfo(h.FileInfo)
+	node := supplyNodeIdWithFileInfo(h.fileInfo)
 	return Header{
-		ID:   RequestID(h.ID),
+		ID:   RequestID(h.id),
 		Node: NodeID(node),
 		// Uid:  uint32(h.ID),
 		// Gid:  h.Gid,
 		// Pid:  h.Pid,
 	}
-}
-
-func convertDirectiveToRequest(directive Directive) Request {
-	var result Request
-
-	fmt.Printf("%v", result)
-	// map dokan -> fuzeo
-	// https://github.com/dokan-dev/dokany/wiki/FUSE
-	switch r := directive.(type) {
-	case *CreateFileDirective:
-		fmt.Printf("%v", r)
-		// fuse_operations::mknod
-		// fuse_operations::create
-		// fuse_operations::open
-		// fuse_operations::mkdir
-		// fuse_operations::opendir
-		cd := r.CreateData
-		fmt.Printf("FileInfo %v\n", r.hdr.FileInfo)
-		fmt.Printf("CreateData %v\n", cd)
-		fmt.Printf("CreateData FileAttributes %v\n", cd.FileAttributes)
-		if cd.FileAttributes&dokan.FileAttributeNormal == dokan.FileAttributeNormal &&
-			cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
-
-			// n, ok := node.(NodeCreater)
-			// if !ok {
-			// 	// If we send back ENOSYS, fuzeo will try mknod+open.
-			// 	return syscall.EPERM
-			// }
-			// s := &fuzeo.CreateFileResponse{
-			// 	File:         nil,
-			// 	CreateStatus: dokan.ExistingDir,
-			// }
-			// if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory {
-			// 	s = &fuzeo.CreateFileResponse{
-			// 		File:         nil,
-			// 		CreateStatus: dokan.CreateStatus(dokan.ErrAccessDenied),
-			// 	}
-			// }
-			// initLookupResponse(&s.LookupResponse)
-			// n2, h2, err := n.Create(ctx, r, s)
-			// if err != nil {
-			// 	return err
-			// }
-			// if err := c.saveLookup(ctx, &s.LookupResponse, snode, r.Name, n2); err != nil {
-			// 	return err
-			// }
-			// s.Handle = c.saveHandle(h2)
-			// done(s)
-			// r.Respond(s)
-		} else if cd.FileAttributes&dokan.FileAttributeNormal == dokan.FileAttributeNormal &&
-			cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-
-			// // s := &fuzeo.OpenResponse{}
-			// s := &fuzeo.CreateFileResponse{
-			// 	File:         nil,
-			// 	CreateStatus: dokan.ExistingDir,
-			// }
-			// if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
-			// 	cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
-
-			// 	s = &fuzeo.CreateFileResponse{
-			// 		File:         nil,
-			// 		CreateStatus: dokan.CreateStatus(dokan.ErrAccessDenied),
-			// 	}
-			// }
-			// var h2 Handle
-			// if n, ok := node.(NodeOpener); ok {
-			// 	hh, err := n.Open(ctx, r, s)
-			// 	if err != nil {
-			// 		return err
-			// 	}
-			// 	h2 = hh
-			// } else {
-			// 	h2 = node
-			// }
-			// s.Handle = c.saveHandle(h2)
-			// done(s)
-			// r.Respond(s)
-		} else if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
-			cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
-
-		} else if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
-			cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-
-		} else if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-			// r.FileInfo = req.FileInfo
-			// r.CreateData = req.CreateData
-			req := &OpenRequest{
-				Header: mkHeaderFromDirective(directive),
-				// Dir:    m.hdr.Opcode == opOpendir,
-				Dir: cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory,
-				// Flags:  openFlags(in.Flags),
-				Flags: OpenReadOnly,
-			}
-
-			result = req
-		}
-	case *FindFilesDirective:
-		// fuse_operations::readdir
-		fmt.Printf("%v", r)
-		fi := r.FileInfo
-		fmt.Printf("FileInfo %v\n", fi)
-		fmt.Printf("FileInfo Pattern %v\n", r.Pattern)
-		in := r
-		fmt.Printf("Header (in): %v\n", in)
-		req := &ReadRequest{
-			Header: mkHeaderFromDirective(directive),
-			// Dir:    m.hdr.Opcode == opReaddir,
-			Dir: true,
-			// Handle:    HandleID(in.Fh),
-			// Offset:    int64(in.Offset),
-			// Size:      int(in.Size),
-			FileFlags: OpenReadOnly,
-		}
-		// if c.proto.GE(Protocol{7, 9}) {
-		// 	// req.Flags = ReadFlags(in.ReadFlags)
-		// 	req.Flags = ReadLockOwner
-		// 	// req.LockOwner = in.LockOwner
-		// 	req.LockOwner = in.LockOwner
-		// 	// req.FileFlags = openFlags(in.Flags)
-		// }
-
-		result = req
-	}
-
-	// return result, err
-	return result
 }

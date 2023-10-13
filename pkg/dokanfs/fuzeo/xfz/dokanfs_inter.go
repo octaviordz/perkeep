@@ -43,6 +43,8 @@ func (t fileSystemInter) WithContext(ctx context.Context) (context.Context, cont
 
 func (t fileSystemInter) GetVolumeInformation(ctx context.Context) (dokan.VolumeInformation, error) {
 	debug("RFS.GetVolumeInformation")
+	// 	rations::statfs 	DOKAN_OPERATIONS::GetDiskFreeSpace
+	// DOKAN_OPERATIONS::GetVolumeInformation
 	return dokan.VolumeInformation{
 		VolumeName:             "Pk",
 		FileSystemName:         "fileSystem",
@@ -69,8 +71,8 @@ func (t fileSystemInter) Printf(string, ...interface{}) {
 func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd *dokan.CreateData) (dokan.File, dokan.CreateStatus, error) {
 	debug("RFS.CreateFile")
 	directive := &CreateFileDirective{
-		hdr: &DirectiveHeader{
-			FileInfo: fi,
+		directiveHeader: directiveHeader{
+			fileInfo: fi,
 		},
 		CreateData: cd,
 	}
@@ -112,7 +114,7 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	a := answer.(*CreateFileAnswer)
 
 	if err != nil {
-		return emptyFile{}, dokan.CreateStatus(dokan.ErrNotSupported), err
+		return nil, dokan.CreateStatus(dokan.ErrNotSupported), err
 	}
 
 	if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
@@ -160,14 +162,17 @@ func (t emptyFile) FlushFileBuffers(ctx context.Context, fi *dokan.FileInfo) err
 	return nil
 }
 
-type emptyFile struct{}
+type emptyFile struct {
+	handle HandleID
+}
 
 func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (*dokan.Stat, error) {
-	debug("emptyFile.Getdokan.FileInformation")
+	debug("emptyFile.GetFileInformation")
 	directive := &GetFileInformationDirective{
-		hdr: &DirectiveHeader{
-			FileInfo: fi,
+		directiveHeader: directiveHeader{
+			fileInfo: fi,
 		},
+		file: t,
 	}
 	answer, err := diesm.PostDirective(ctx, directive)
 	debug(answer)
@@ -231,18 +236,22 @@ func getRegistoryEntry(name string) (registry.Key, error) {
 func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern string, fillStatCallback func(*dokan.NamedStat) error) error {
 	debug("emptyFile.FindFiles")
 	fmt.Printf("FindFiles fi.Path() : %s\n", fi.Path())
+	// fuse_operations::readdir 	DOKAN_OPERATIONS::FindFiles
 	directive := &FindFilesDirective{
-		FileInfo:         fi,
+		directiveHeader: directiveHeader{
+			fileInfo: fi,
+		},
+		file:             t,
 		Pattern:          pattern,
 		FillStatCallback: fillStatCallback,
 	}
-	_, err := diesm.PostDirective(ctx, directive)
+
+	answer, err := diesm.PostDirective(ctx, directive)
 	if err != nil {
 		return err
 	}
-	// readResp := resp.(fuzeo.ReadResponse)
-	// debug(readResp)
-	// debug(readResp.Data)
+	a := answer.(*FindFilesAnswer)
+	debug(a)
 
 	namedStat := dokan.NamedStat{
 		Name:      "",
