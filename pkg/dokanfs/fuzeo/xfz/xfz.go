@@ -192,6 +192,117 @@ func (m *requestsModule) getHandleByFile(file emptyFile) HandleID {
 	return h
 }
 
+//#region Workflows / Products
+
+// Information on Windows API map to FUSE API > Step 4: Implementing FUSE Core
+// https://winfsp.dev/doc/SSHFS-Port-Case-Study/
+// https://github.com/dokan-dev/dokany/wiki/FUSE
+type product[Arg any, Phase any, State any, Cmd any] struct {
+	init   func(Arg) (State, Cmd)
+	update func(Phase, State) (State, Cmd)
+}
+
+func makefindFilesProduct() {
+	type Cmd interface{}
+	// type Cmd[T any] struct{}
+
+	type State struct {
+		directive       *FindFilesDirective
+		readRequest     *ReadRequest
+		readResponse    *ReadResponse
+		getattrRequest  *GetattrRequest
+		getattrResponse *GetattrResponse
+	}
+
+	type readdir struct {
+		kind string
+		req  *ReadRequest
+		resp *ReadResponse
+	}
+
+	type getattr struct {
+		kind string
+		req  *GetattrRequest
+		resp *GetattrResponse
+	}
+
+	type Phase struct {
+		kind    string
+		readdir *readdir
+		getattr *getattr
+	}
+	type initArg struct {
+		d *FindFilesDirective
+	}
+
+	makeInitCmd := func(arg initArg) Cmd {
+		// fuse_operations::readdir
+		d := arg.d
+		file := d.file.(emptyFile)
+		handle := file.handle
+		debug("ReadRequest fuse_operations::readdir")
+		return Phase{
+			kind: "readdir",
+			readdir: &readdir{
+				kind: "request",
+				req: &ReadRequest{
+					Header:    makeHeaderWithDirective(d),
+					Dir:       true,
+					Handle:    handle,
+					Offset:    0,
+					Size:      maxRead,
+					Flags:     0,
+					FileFlags: OpenReadOnly,
+				},
+			},
+		}
+	}
+
+	// Workflow
+	update := func(phase Phase, state State) (updated State, cmd Cmd) {
+		switch phase.kind {
+		case "readdir":
+			switch phase.readdir.kind {
+			case "request":
+				fmt.Printf("Request readdir: %d\n", phase.readdir.req)
+				updated = state
+				updated.readRequest = phase.readdir.req
+				return
+			case "response":
+				fmt.Printf("Response readdir: %d\n", phase.readdir.resp)
+				updated = state
+				updated.readResponse = phase.readdir.resp
+				return
+			}
+		case "getattr":
+			switch phase.getattr.kind {
+			case "request":
+				fmt.Printf("Request readdir: %d\n", phase.getattr.req)
+			case "response":
+				fmt.Printf("Response readdir: %d\n", phase.getattr.resp)
+			}
+			// case "complete":
+		}
+	}
+
+	init := func(arg initArg) (State, Cmd) {
+		state := State{
+			directive: arg.d,
+		}
+		cmd := makeInitCmd(arg)
+		return state, cmd
+	}
+
+	findFilesProduct := product[initArg, Phase, State, Cmd]{
+		init:   init,
+		update: update,
+	}
+
+	return findFilesProduct
+}
+
+//#endregion
+
 // func (m *requestsModule) WriteRequest(ctx context.Context, req Request) (Response, error) {
 // 	var resp Response
 // 	requestId := m.putRequest(req)
@@ -306,6 +417,11 @@ func (rrm *requestResponseModule) ReadRequest(fd *os.File) (req Request, err err
 		err = nil
 		return
 	case *FindFilesDirective:
+
+		// p := FindFilesProduct{}
+		// arg:= {directive: d}
+		// Products.perform(arg, p)
+
 		// fuse_operations::readdir
 		file := d.file.(emptyFile)
 		handle := file.handle
@@ -755,16 +871,3 @@ var _ Answer = (*GetFileInformationAnswer)(nil)
 
 func (r *GetFileInformationAnswer) Hdr() *Header  { return r.Header.Hdr() }
 func (r *GetFileInformationAnswer) IsAnswerType() {}
-
-//#region
-// Information on Windows API map to FUSE API > Step 4: Implementing FUSE Core
-// https://winfsp.dev/doc/SSHFS-Port-Case-Study/
-// https://github.com/dokan-dev/dokany/wiki/FUSE
-
-// Workflow
-type FindFilesProduct struct {
-	// readdir
-	// getattr
-}
-
-//#endregion
