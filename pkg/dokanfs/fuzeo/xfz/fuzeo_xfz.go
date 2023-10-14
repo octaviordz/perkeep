@@ -978,6 +978,8 @@ func MountHandle(dir string) (handle *os.File, err error) {
 	return fd, nil
 }
 
+// #region fuzeo
+
 ///////////////////////////////
 ///////////////////////////////
 ///////////////////////////////
@@ -1691,7 +1693,7 @@ type GetattrResponse struct {
 }
 
 func (r *GetattrResponse) String() string {
-	return fmt.Sprintf("Getattr %v", r.Attr)
+	return fmt.Sprintf("Getattr [%s] %v", &r.ResponseHeader, r.Attr)
 }
 
 func (r *GetattrResponse) IsResponseType() {}
@@ -1935,11 +1937,11 @@ type OpenResponse struct {
 }
 
 func (r *OpenResponse) string() string {
-	return fmt.Sprintf("%v fl=%v", r.Handle, r.Flags)
+	return fmt.Sprintf("h=%v fl=%v", r.Handle, r.Flags)
 }
 
 func (r *OpenResponse) String() string {
-	return fmt.Sprintf("Open %s", r.string())
+	return fmt.Sprintf("Open [%s] %s", &r.ResponseHeader, r.string())
 }
 
 func (r *OpenResponse) IsResponseType() {}
@@ -2060,12 +2062,17 @@ func (r *ReadRequest) Respond(resp *ReadResponse) {
 
 // A ReadResponse is the response to a ReadRequest.
 type ReadResponse struct {
-	Data []byte
+	ResponseHeader
+	Entries []Dirent
+	Data    []byte
 }
 
 func (r *ReadResponse) String() string {
 	return fmt.Sprintf("Read %d", len(r.Data))
 }
+func (r *ReadResponse) IsResponseType() {}
+func (r *ReadResponse) PutId(id uint64) { r.Id = id }
+func (r *ReadResponse) GetId() uint64   { return r.Id }
 
 type jsonReadResponse struct {
 	Len uint64
@@ -2601,121 +2608,10 @@ func (r *ExchangeDataRequest) Respond() {
 	// r.respond(buf)
 }
 
-// /////////////////////////////
-// /////////////////////////////
-// /////////////////////////////
-// // An OpenRequest asks to open a file or directory
-// type OpenRequest struct {
-// 	Header    `json:"-"`
-// 	Dir       bool // is this Opendir?
-// 	Flags     OpenFlags
-// 	OpenFlags OpenRequestFlags
-// }
+// #endregion
 
-// var _ Request = (*OpenRequest)(nil)
-
-// func (r *OpenRequest) String() string {
-// 	return fmt.Sprintf("Open [%s] dir=%v fl=%v", &r.Header, r.Dir, r.Flags)
-// }
-// func (r *OpenRequest) IsRequestType() {}
-
-// // A OpenResponse is the response to a OpenRequest.
-// type OpenResponse struct {
-// 	Handle HandleID
-// 	Flags  OpenResponseFlags
-// }
-
-// func (r *OpenResponse) string() string {
-// 	return fmt.Sprintf("%v fl=%v", r.Handle, r.Flags)
-// }
-
-// func (r *OpenResponse) String() string {
-// 	return fmt.Sprintf("Open %s", r.string())
-// }
-
-// // Respond replies to the request with the given response.
-// func (r *OpenRequest) Respond(resp *OpenResponse) {
-// 	// buf := newBuffer(unsafe.Sizeof(openOut{}))
-// 	// out := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
-// 	// out.Fh = uint64(resp.Handle)
-// 	// out.OpenFlags = uint32(resp.Flags)
-
-// 	var outResp Response = &OpenResponse{
-// 		Header: Header{
-// 			ID:   RequestID(uint64(r.ID)),
-// 			Node: NodeID(uint64(r.Node)),
-// 		},
-// 		Handle: HandleID(resp.Handle),
-// 	}
-
-// 	r.respond(outResp)
-// }
-
-// type CreateFileRequest struct {
-// 	Header
-// 	FileInfo   *dokan.FileInfo
-// 	CreateData *dokan.CreateData
-// }
-
-// func (r CreateFileRequest) Hdr() *Header       { return r.hdr }
-// func (r CreateFileRequest) RespondError(error) {}
-//
-//	func (r CreateFileRequest) String() string {
-//		return fmt.Sprintf("RequestCreateFile [%s]", r.FileInfo.Path())
-//	}
-// func (r *CreateFileRequest) BuildFrom(conn *Conn, req *xfz.RequestCreateFile) {
-// 	h := req.Hdr()
-// 	r.hdr = &Header{
-// 		Conn: conn,
-// 		ID:   RequestID(h.ID),
-// 		Node: NodeID(h.Node),
-// 		// Uid:  h.Uid,
-// 		// Gid:  h.Gid,
-// 		// Pid:  h.Pid,
-// 	}
-// 	r.FileInfo = req.FileInfo
-// 	r.CreateData = req.CreateData
-// }
-
-// func (r *CreateFileRequest) Respond(resp *CreateFileResponse) {
-// 	buf := newBuffer(unsafe.Sizeof(statfsOut{}))
-// 	out := (*statfsOut)(buf.alloc(unsafe.Sizeof(statfsOut{})))
-// 	out.St = kstatfs{
-// 		Blocks:  resp.Blocks,
-// 		Bfree:   resp.Bfree,
-// 		Bavail:  resp.Bavail,
-// 		Files:   resp.Files,
-// 		Ffree:   resp.Ffree,
-// 		Bsize:   resp.Bsize,
-// 		Namelen: resp.Namelen,
-// 		Frsize:  resp.Frsize,
-// 	}
-// 	r.respond(buf)
-// }
-
-// type CreateFileResponse struct {
-// 	File         dokan.File
-// 	CreateStatus dokan.CreateStatus
-// }
-
-// var _ Request = CreateFileRequest{}
-
-// type xfzResponse struct {
-// 	hdr *xfz.ResponseHeader
-// }
-
-// var _ xfz.Response = (*xfzResponse)(nil)
-
-// func (r *xfzResponse) Hdr() *xfz.ResponseHeader {
-// 	return r.hdr
-// }
-// func (r *xfzResponse) RespondError(error) {
-// }
-// func (r *xfzResponse) String() string {
-// 	return fmt.Sprintf("Response [%s]", r.hdr.ID)
-// }
-// func (r *xfzResponse) IsResponseType() {}
-
+// //////////////////////////////////////
+// #region
 func makeHeaderWithDirective(directive Directive) Header {
 	h := directive.Hdr()
 	node := supplyNodeIdWithFileInfo(h.fileInfo)
@@ -2727,3 +2623,7 @@ func makeHeaderWithDirective(directive Directive) Header {
 		// Pid:  h.Pid,
 	}
 }
+
+const maxRead = 128 * 1024
+
+// #endregion

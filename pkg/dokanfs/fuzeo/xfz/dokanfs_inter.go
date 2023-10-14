@@ -6,13 +6,10 @@ package xfz
 import (
 	"context"
 	"fmt"
-	"io"
-	"strings"
 	"time"
 
 	"github.com/keybase/client/go/kbfs/dokan"
 	"github.com/keybase/client/go/kbfs/dokan/winacl"
-	"golang.org/x/sys/windows/registry"
 )
 
 var _ dokan.FileSystem = fileSystemInter{}
@@ -188,45 +185,6 @@ func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (
 	return a.Stat, nil
 }
 
-var topDirectory = map[string]registry.Key{
-	"ClassesRoot":   registry.CLASSES_ROOT,
-	"CurrentUser":   registry.CURRENT_USER,
-	"CurrentConfig": registry.CURRENT_CONFIG,
-	"LocalMachine":  registry.LOCAL_MACHINE,
-	"Users":         registry.USERS,
-}
-
-func getRegistoryEntry(name string) (registry.Key, error) {
-	fmt.Printf("getRegistoryEntry : %s\n", name)
-	var emptyKey registry.Key
-
-	xi := name[1:]
-	fmt.Printf("name[1:] : %s\n", xi)
-	top := strings.Index(name[1:], "\\") + 1
-	fmt.Printf("top : %d\n", top)
-	if top <= 0 {
-		top = len(name)
-	}
-	fmt.Printf("top : %d\n", top)
-
-	topname := name[1:top]
-	fmt.Printf("topname : %s\n", topname)
-	sub := strings.Index(name[1:], "\\")
-	fmt.Printf("sub : %d\n", sub)
-
-	vkey, exists := topDirectory[topname]
-	fmt.Printf("vkey: %v, exists: %t\n", vkey, exists)
-	if exists {
-		if sub == -1 {
-			return vkey, nil
-		} else {
-			fmt.Printf("name[sub+2:] : %s\n", name[sub+2:])
-			return registry.OpenKey(vkey, name[sub+2:], registry.READ)
-		}
-	}
-	return emptyKey, fmt.Errorf("enty outside scope")
-}
-
 // FindFiles is the readdir. The function is a callback that should be called
 // with each file. The same NamedStat may be reused for subsequent calls.
 //
@@ -251,55 +209,22 @@ func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern st
 		return err
 	}
 	a := answer.(*FindFilesAnswer)
-	debug(a)
-
-	namedStat := dokan.NamedStat{
-		Name:      "",
-		ShortName: "",
-		Stat: dokan.Stat{
-			Creation:       time.Now(),
-			LastAccess:     time.Now(),
-			LastWrite:      time.Now(),
-			FileSize:       0,
-			FileAttributes: dokan.FileAttributeDirectory,
-		},
-	}
-	if fi.Path() == "\\" {
-		for key := range topDirectory {
-			namedStat.Name = key
-			namedStat.Stat.FileAttributes = dokan.FileAttributeDirectory
-			if err := fillStatCallback(&namedStat); err != nil {
-				fmt.Println("fillStatCallback Error:", err)
-			}
-		}
-	} else {
-		key, err := getRegistoryEntry(fi.Path())
-		if err != nil {
-			return err
-		}
-		subkeys, err := key.ReadSubKeyNames(4000)
-		if err != nil && err != io.EOF {
-			return err
-		}
-		for _, subkey := range subkeys {
-			namedStat.Name = subkey
-			namedStat.Stat.FileAttributes = dokan.FileAttributeDirectory
-			if err := fillStatCallback(&namedStat); err != nil {
-				fmt.Println("fillStatCallback Error:", err)
-			}
-		}
-		valueNames, err := key.ReadValueNames(4000)
-		if err != nil && err != io.EOF {
-			return err
-		}
-		for _, valueName := range valueNames {
-			namedStat.Name = valueName
-			namedStat.Stat.FileAttributes = dokan.FileAttributeNormal
-			if err := fillStatCallback(&namedStat); err != nil {
-				fmt.Println("fillStatCallback Error:", err)
-			}
+	for _, namedStat := range a.Items {
+		if err := fillStatCallback(&namedStat); err != nil {
+			fmt.Println("fillStatCallback Error:", err)
 		}
 	}
+	// namedStat := dokan.NamedStat{
+	// 	Name:      "",
+	// 	ShortName: "",
+	// 	Stat: dokan.Stat{
+	// 		Creation:       time.Now(),
+	// 		LastAccess:     time.Now(),
+	// 		LastWrite:      time.Now(),
+	// 		FileSize:       0,
+	// 		FileAttributes: dokan.FileAttributeDirectory,
+	// 	},
+	// }
 
 	return nil
 }

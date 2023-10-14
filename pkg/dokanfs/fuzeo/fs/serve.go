@@ -1355,6 +1355,7 @@ func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode,
 
 				if shandle.readData == nil {
 					dirs, err := h.ReadDirAll(ctx)
+					s.DirEntries = dirs
 					if err != nil {
 						return err
 					}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/keybase/client/go/kbfs/dokan"
 )
@@ -257,7 +258,7 @@ var Requests = &requestResponseModule{}
 func (rrm *requestResponseModule) ReadRequest(fd *os.File) (req Request, err error) {
 
 	d := <-diesm.inBuffer
-	debugf("ReadRequest %v", d)
+	debugf("## ReadRequest\n > %v\n", d)
 
 	switch d := d.(type) {
 	default:
@@ -310,12 +311,12 @@ func (rrm *requestResponseModule) ReadRequest(fd *os.File) (req Request, err err
 		handle := file.handle
 		debug("ReadRequest fuse_operations::readdir")
 		req = &ReadRequest{
-			Header: makeHeaderWithDirective(d),
-			Dir:    true,
-			Handle: handle,
-			Offset: 0,
-			Size:   0,
-			// Flags:  OpenReadOnly,
+			Header:    makeHeaderWithDirective(d),
+			Dir:       true,
+			Handle:    handle,
+			Offset:    0,
+			Size:      maxRead,
+			Flags:     0,
 			FileFlags: OpenReadOnly,
 		}
 		return
@@ -328,6 +329,8 @@ func makeFileWithHandle(handle HandleID) emptyFile {
 
 func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error {
 	var answer Answer
+
+	debugf("## WriteRespond\n > %v\n", resp)
 
 	switch r := (resp).(type) {
 	case *OpenResponse:
@@ -348,10 +351,10 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		createStatus := dokan.ExistingFile
 		isDir := fileInfos.isDir(d.fileInfo)
 		if isDir {
-			debugf("WriteRespond fuse_operations::opendir %v", r)
+			debugf("WriteRespond fuse_operations::opendir")
 			createStatus = dokan.ExistingDir
 		} else {
-			debugf("WriteRespond fuse_operations::open %v", r)
+			debugf("WriteRespond fuse_operations::open")
 		}
 		file := makeFileWithHandle(r.Handle)
 
@@ -364,7 +367,7 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		// dokan.CreateStatus(dokan.ErrAccessDenied)
 
 		if r.Handle != 0 {
-			retsm.saveHandle(r.Handle, d.Hdr().fileInfo.Path(), a.File)
+			retsm.saveHandle(r.Handle, d.fileInfo.Path(), a.File)
 		}
 
 	case *GetattrResponse:
@@ -384,7 +387,7 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		// Rdev      uint32      // device numbers
 		// Flags     uint32      // chflags(2) flags (OS X only)
 		// BlockSize uint32      // preferred blocksize for filesystem I/O
-		debugf("WriteRespond fuse_operations::getattr %v", r)
+		debugf("WriteRespond fuse_operations::getattr")
 		a := &GetFileInformationAnswer{
 			Header: mkHeaderFromResponse(r),
 			Stat: &dokan.Stat{
@@ -399,19 +402,31 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		answer = a
 	case *ReadResponse:
 		// fuse_operations::readdir 	DOKAN_OPERATIONS::FindFiles
-		debugf("WriteRespond fuse_operations::getattr %v", r)
-		a := &GetFileInformationAnswer{
+		debugf("WriteRespond fuse_operations::readdir")
+		a := &FindFilesAnswer{
 			Header: mkHeaderFromResponse(r),
-			Stat: &dokan.Stat{
-				Creation:       r.Attr.Crtime,
-				LastAccess:     r.Attr.Atime,
-				LastWrite:      r.Attr.Mtime,
-				FileSize:       int64(r.Attr.Size),
-				FileIndex:      r.Attr.Inode,
-				FileAttributes: mkFileAttributesWithAttr(r.Attr),
-			},
+			Items:  make([]dokan.NamedStat, len(r.Entries)),
 		}
 		answer = a
+		namedStat := dokan.NamedStat{
+			Name:      "",
+			ShortName: "",
+			Stat: dokan.Stat{
+				Creation:   time.Now(),
+				LastAccess: time.Now(),
+				LastWrite:  time.Now(),
+				FileSize:   0,
+			},
+		}
+		for _, it := range r.Entries {
+			namedStat.Name = it.Name
+			if it.Type&DT_File == DT_File {
+				namedStat.Stat.FileAttributes = dokan.FileAttributeNormal
+			} else if it.Type&DT_Dir == DT_Dir {
+				namedStat.Stat.FileAttributes = dokan.FileAttributeDirectory
+			}
+			a.Items = append(a.Items, namedStat)
+		}
 	}
 
 	return diesm.PostAnswer(fd, answer)
@@ -442,6 +457,10 @@ type ResponseHeader struct {
 	Id uint64
 }
 
+func (h *ResponseHeader) String() string {
+	return fmt.Sprintf("Id=%v", h.Id)
+}
+
 type Response interface {
 	IsResponseType()
 	PutId(uint64)
@@ -452,7 +471,7 @@ type Response interface {
 	// RespondError responds to the request with the given error.
 	// RespondError(error)
 
-	// String() string
+	String() string
 }
 
 // A Header describes the basic information sent in every request.
@@ -466,7 +485,7 @@ func (h *directiveHeader) Hdr() *directiveHeader {
 }
 
 func (h *directiveHeader) String() string {
-	return fmt.Sprintf("ID=%v FileInfo.Path=%v FileInfo.NumberOfFileHandles=%v", h.id, h.fileInfo.Path(), h.fileInfo.NumberOfFileHandles())
+	return fmt.Sprintf("Id=%v FileInfo.Path=%v FileInfo.NumberOfFileHandles=%v", h.id, h.fileInfo.Path(), h.fileInfo.NumberOfFileHandles())
 }
 
 type Directive interface {
@@ -697,11 +716,15 @@ var _ Directive = (*FindFilesDirective)(nil)
 func (r *FindFilesDirective) putDirectiveId(id DirectiveID) { r.id = id }
 func (r *FindFilesDirective) RespondError(error)            {}
 func (r *FindFilesDirective) String() string {
-	return fmt.Sprintf("RequestFindFiles [%v]", r.directiveHeader)
+	f := r.file.(emptyFile)
+	return fmt.Sprintf("FindFilesDirective [%s] file.handle=%v", r.Hdr(), f.handle)
 }
 func (d *FindFilesDirective) IsDirectiveType() {}
 
-type FindFilesAnswer struct{ Header }
+type FindFilesAnswer struct {
+	Header
+	Items []dokan.NamedStat
+}
 
 var _ Answer = (*FindFilesAnswer)(nil)
 
@@ -718,7 +741,8 @@ var _ Directive = (*GetFileInformationDirective)(nil)
 func (r *GetFileInformationDirective) putDirectiveId(id DirectiveID) { r.id = id }
 func (r *GetFileInformationDirective) RespondError(error)            {}
 func (r *GetFileInformationDirective) String() string {
-	return fmt.Sprintf("RequestFindFiles [%s]", r.Hdr().fileInfo.Path())
+	f := r.file.(emptyFile)
+	return fmt.Sprintf("GetFileInformationDirective [%s] file.handle=%s", r.Hdr(), f.handle)
 }
 func (d *GetFileInformationDirective) IsDirectiveType() {}
 
@@ -731,3 +755,16 @@ var _ Answer = (*GetFileInformationAnswer)(nil)
 
 func (r *GetFileInformationAnswer) Hdr() *Header  { return r.Header.Hdr() }
 func (r *GetFileInformationAnswer) IsAnswerType() {}
+
+//#region
+// Information on Windows API map to FUSE API > Step 4: Implementing FUSE Core
+// https://winfsp.dev/doc/SSHFS-Port-Case-Study/
+// https://github.com/dokan-dev/dokany/wiki/FUSE
+
+// Workflow
+type FindFilesProduct struct {
+	// readdir
+	// getattr
+}
+
+//#endregion

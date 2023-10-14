@@ -355,7 +355,7 @@ func mkHeaderWithConn(xr xfz.Request, c *Conn) Header {
 		Conn: c,
 		ID:   RequestID(h.ID),
 		Node: NodeID(h.Node),
-		Uid:  uint32(h.ID),
+		// Uid:  uint32(h.ID),
 		// Gid:  h.Gid,
 		// Pid:  h.Pid,
 	}
@@ -376,7 +376,6 @@ func (c *Conn) ReadRequest() (Request, error) {
 		return nil, fmt.Errorf("not implemented %v", xr)
 		// case *xfz.CreateFileRequest:
 	case *xfz.OpenRequest:
-		fmt.Printf("%v", r)
 		req := &OpenRequest{
 			Header:    mkHeaderWithConn(r, c),
 			Dir:       r.Dir,
@@ -385,7 +384,6 @@ func (c *Conn) ReadRequest() (Request, error) {
 		}
 		result = req
 	case *xfz.GetattrRequest:
-		fmt.Printf("%v", r)
 		req := &GetattrRequest{
 			Header: mkHeaderWithConn(r, c),
 			Flags:  GetattrFlags(r.Flags),
@@ -393,7 +391,6 @@ func (c *Conn) ReadRequest() (Request, error) {
 		}
 		result = req
 	case *xfz.ReadRequest:
-		fmt.Printf("%v", r)
 		//fmt.Printf("Header (in): %v\n", in)
 		req := &ReadRequest{
 			Header:    mkHeaderWithConn(r, c),
@@ -414,7 +411,7 @@ func (c *Conn) ReadRequest() (Request, error) {
 		result = req
 	}
 
-	fmt.Printf("Connection ReadRequest %v. \n", result)
+	fmt.Printf("# Connection ReadRequest %v. \n", result)
 	return result, err
 }
 
@@ -439,6 +436,7 @@ func errorString(err error) string {
 }
 
 func (c *Conn) respond(resp xfz.Response) {
+	fmt.Printf("# Connection WriteRespond %v. \n", resp)
 	if err := xfz.Requests.WriteRespond(c.dev, resp); err != nil {
 		Debug(xfzBugWriteError{
 			Error: errorString(err),
@@ -652,6 +650,7 @@ type Attr struct {
 	Atime     time.Time   // time of last access
 	Mtime     time.Time   // time of last modification
 	Ctime     time.Time   // time of last inode change
+	Crtime    time.Time   // time of creation (OS X only)
 	Mode      os.FileMode // file mode
 	Nlink     uint32      // number of links (usually 1)
 	Uid       uint32      // owner uid
@@ -731,13 +730,26 @@ func (r *GetattrRequest) String() string {
 
 // Respond replies to the request with the given response.
 func (r *GetattrRequest) Respond(resp *GetattrResponse) {
-	size := attrOutSize(r.Header.Conn.proto)
-	buf := newBuffer(size)
-	out := (*attrOut)(buf.alloc(size))
-	out.AttrValid = uint64(resp.Attr.Valid / time.Second)
-	out.AttrValidNsec = uint32(resp.Attr.Valid % time.Second / time.Nanosecond)
-	resp.Attr.attr(&out.Attr, r.Header.Conn.proto)
-	r.respond(buf)
+	var outResp xfz.Response = &xfz.GetattrResponse{
+		Attr: xfz.Attr{
+			Valid:     resp.Attr.Valid,
+			Inode:     resp.Attr.Inode,
+			Size:      resp.Attr.Size,
+			Blocks:    resp.Attr.Blocks,
+			Atime:     resp.Attr.Atime,
+			Mtime:     resp.Attr.Mtime,
+			Ctime:     resp.Attr.Ctime,
+			Crtime:    resp.Attr.Crtime,
+			Mode:      resp.Attr.Mode,
+			Nlink:     resp.Attr.Nlink,
+			Uid:       resp.Attr.Uid,
+			Gid:       resp.Attr.Gid,
+			Rdev:      resp.Attr.Rdev,
+			Flags:     uint32(resp.Attr.Flags),
+			BlockSize: resp.Attr.BlockSize,
+		},
+	}
+	r.respondi(outResp)
 }
 
 // A GetattrResponse is the response to a GetattrRequest.
@@ -1087,7 +1099,8 @@ func (r *ReadRequest) Respond(resp *ReadResponse) {
 
 // A ReadResponse is the response to a ReadRequest.
 type ReadResponse struct {
-	Data []byte
+	DirEntries []Dirent
+	Data       []byte
 }
 
 func (r *ReadResponse) String() string {
