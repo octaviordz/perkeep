@@ -1038,7 +1038,7 @@ type Request interface {
 	Hdr() *Header
 
 	// RespondError responds to the request with the given error.
-	RespondError(error)
+	// RespondError(error)
 
 	String() string
 
@@ -1674,6 +1674,7 @@ var _ = Request(&GetattrRequest{})
 func (r *GetattrRequest) String() string {
 	return fmt.Sprintf("Getattr [%s] %v fl=%v", &r.Header, r.Handle, r.Flags)
 }
+func (d *GetattrRequest) isProcessArg() {}
 
 // Respond replies to the request with the given response.
 func (r *GetattrRequest) Respond(resp *GetattrResponse) {
@@ -1697,8 +1698,9 @@ func (r *GetattrResponse) String() string {
 }
 
 func (r *GetattrResponse) IsResponseType() {}
-func (r *GetattrResponse) PutId(id uint64) { r.Id = id }
-func (r *GetattrResponse) GetId() uint64   { return r.Id }
+func (r *GetattrResponse) PutId(id uint64) { r.Id = RequestID(id) }
+func (r *GetattrResponse) GetId() uint64   { return uint64(r.Id) }
+func (d *GetattrResponse) isProcessArg()   {}
 
 func mkFileAttributesWithAttr(attr Attr) dokan.FileAttribute {
 	// FileAttributeReadonly = FileAttribute(0x00000001)
@@ -1945,8 +1947,8 @@ func (r *OpenResponse) String() string {
 }
 
 func (r *OpenResponse) IsResponseType() {}
-func (r *OpenResponse) PutId(id uint64) { r.Id = id }
-func (r *OpenResponse) GetId() uint64   { return r.Id }
+func (r *OpenResponse) PutId(id uint64) { r.Id = RequestID(id) }
+func (r *OpenResponse) GetId() uint64   { return uint64(r.Id) }
 
 // A CreateRequest asks to create and open a file (not a directory).
 type CreateRequest struct {
@@ -1962,27 +1964,6 @@ var _ = Request(&CreateRequest{})
 
 func (r *CreateRequest) String() string {
 	return fmt.Sprintf("Create [%s] %q fl=%v mode=%v umask=%v", &r.Header, r.Name, r.Flags, r.Mode, r.Umask)
-}
-
-// Respond replies to the request with the given response.
-func (r *CreateRequest) Respond(resp *CreateResponse) {
-	// eSize := entryOutSize(r.Header.Conn.proto)
-	// buf := newBuffer(eSize + unsafe.Sizeof(openOut{}))
-
-	// e := (*entryOut)(buf.alloc(eSize))
-	// e.Nodeid = uint64(resp.Node)
-	// e.Generation = resp.Generation
-	// e.EntryValid = uint64(resp.EntryValid / time.Second)
-	// e.EntryValidNsec = uint32(resp.EntryValid % time.Second / time.Nanosecond)
-	// e.AttrValid = uint64(resp.Attr.Valid / time.Second)
-	// e.AttrValidNsec = uint32(resp.Attr.Valid % time.Second / time.Nanosecond)
-	// resp.Attr.attr(&e.Attr, r.Header.Conn.proto)
-
-	// o := (*openOut)(buf.alloc(unsafe.Sizeof(openOut{})))
-	// o.Fh = uint64(resp.Handle)
-	// o.OpenFlags = uint32(resp.Flags)
-
-	// r.respond(buf)
 }
 
 // A CreateResponse is the response to a CreateRequest.
@@ -2009,21 +1990,6 @@ var _ = Request(&MkdirRequest{})
 
 func (r *MkdirRequest) String() string {
 	return fmt.Sprintf("Mkdir [%s] %q mode=%v umask=%v", &r.Header, r.Name, r.Mode, r.Umask)
-}
-
-// Respond replies to the request with the given response.
-func (r *MkdirRequest) Respond(resp *MkdirResponse) {
-	// size := entryOutSize(r.Header.Conn.proto)
-	// buf := newBuffer(size)
-	// out := (*entryOut)(buf.alloc(size))
-	// out.Nodeid = uint64(resp.Node)
-	// out.Generation = resp.Generation
-	// out.EntryValid = uint64(resp.EntryValid / time.Second)
-	// out.EntryValidNsec = uint32(resp.EntryValid % time.Second / time.Nanosecond)
-	// out.AttrValid = uint64(resp.Attr.Valid / time.Second)
-	// out.AttrValidNsec = uint32(resp.Attr.Valid % time.Second / time.Nanosecond)
-	// resp.Attr.attr(&out.Attr, r.Header.Conn.proto)
-	// r.respond(buf)
 }
 
 // A MkdirResponse is the response to a MkdirRequest.
@@ -2053,12 +2019,7 @@ func (r *ReadRequest) String() string {
 	return fmt.Sprintf("Read [%s] %v %d @%#x dir=%v fl=%v lock=%d ffl=%v", &r.Header, r.Handle, r.Size, r.Offset, r.Dir, r.Flags, r.LockOwner, r.FileFlags)
 }
 
-// Respond replies to the request with the given response.
-func (r *ReadRequest) Respond(resp *ReadResponse) {
-	// buf := newBuffer(uintptr(len(resp.Data)))
-	// buf = append(buf, resp.Data...)
-	// r.respond(buf)
-}
+func (d *ReadRequest) isProcessArg() {}
 
 // A ReadResponse is the response to a ReadRequest.
 type ReadResponse struct {
@@ -2067,12 +2028,18 @@ type ReadResponse struct {
 	Data    []byte
 }
 
-func (r *ReadResponse) String() string {
-	return fmt.Sprintf("Read %d", len(r.Data))
+func (r *ReadResponse) string() string {
+	return fmt.Sprintf("len(Data)=%d len(Entries)=%v ", len(r.Data), len(r.Entries))
 }
+
+func (r *ReadResponse) String() string {
+	return fmt.Sprintf("Read [%s] %s", &r.ResponseHeader, r.string())
+}
+
 func (r *ReadResponse) IsResponseType() {}
-func (r *ReadResponse) PutId(id uint64) { r.Id = id }
-func (r *ReadResponse) GetId() uint64   { return r.Id }
+func (r *ReadResponse) PutId(id uint64) { r.Id = RequestID(id) }
+func (r *ReadResponse) GetId() uint64   { return uint64(r.Id) }
+func (d *ReadResponse) isProcessArg()   {}
 
 type jsonReadResponse struct {
 	Len uint64
@@ -2612,18 +2579,5 @@ func (r *ExchangeDataRequest) Respond() {
 
 // //////////////////////////////////////
 // #region
-func makeHeaderWithDirective(directive Directive) Header {
-	h := directive.Hdr()
-	node := supplyNodeIdWithFileInfo(h.fileInfo)
-	return Header{
-		ID:   RequestID(h.id),
-		Node: NodeID(node),
-		// Uid:  uint32(h.ID),
-		// Gid:  h.Gid,
-		// Pid:  h.Pid,
-	}
-}
-
-const maxRead = 128 * 1024
 
 // #endregion

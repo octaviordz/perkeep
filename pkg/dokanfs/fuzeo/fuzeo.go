@@ -1092,9 +1092,25 @@ func (r *ReadRequest) String() string {
 
 // Respond replies to the request with the given response.
 func (r *ReadRequest) Respond(resp *ReadResponse) {
-	buf := newBuffer(uintptr(len(resp.Data)))
-	buf = append(buf, resp.Data...)
-	r.respond(buf)
+	// buf := newBuffer(uintptr(len(resp.Data)))
+	// buf = append(buf, resp.Data...)
+	// r.respond(buf)
+	outEntries := make([]xfz.Dirent, len(resp.DirEntries))
+	for _, it := range resp.DirEntries {
+		outEntries = append(
+			outEntries,
+			xfz.Dirent{
+				Inode: it.Inode,
+				Type:  xfz.DirentType(it.Type),
+				Name:  it.Name,
+			},
+		)
+	}
+	var outResp xfz.Response = &xfz.ReadResponse{
+		Entries: outEntries,
+		Data:    resp.Data,
+	}
+	r.respondi(outResp)
 }
 
 // A ReadResponse is the response to a ReadRequest.

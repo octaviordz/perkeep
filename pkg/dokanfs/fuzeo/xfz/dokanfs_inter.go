@@ -193,7 +193,8 @@ func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (
 // to handle empty strings as patterns.
 func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern string, fillStatCallback func(*dokan.NamedStat) error) error {
 	debug("emptyFile.FindFiles")
-	fmt.Printf("FindFiles fi.Path() : %s\n", fi.Path())
+	fmt.Printf("FindFiles fi.Path(): %s\n", fi.Path())
+	compound := makefindFilesCompound()
 	// fuse_operations::readdir 	DOKAN_OPERATIONS::FindFiles
 	directive := &FindFilesDirective{
 		directiveHeader: directiveHeader{
@@ -202,6 +203,7 @@ func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern st
 		file:             t,
 		Pattern:          pattern,
 		FillStatCallback: fillStatCallback,
+		compound:         compound,
 	}
 
 	answer, err := diesm.PostDirective(ctx, directive)
