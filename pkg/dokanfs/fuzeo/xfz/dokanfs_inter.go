@@ -194,7 +194,7 @@ func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (
 func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern string, fillStatCallback func(*dokan.NamedStat) error) error {
 	debug("emptyFile.FindFiles")
 	fmt.Printf("FindFiles fi.Path(): %s\n", fi.Path())
-	compound := makefindFilesCompound()
+	compound := makefindFilesCompound(ctx)
 	// fuse_operations::readdir 	DOKAN_OPERATIONS::FindFiles
 	directive := &FindFilesDirective{
 		directiveHeader: directiveHeader{

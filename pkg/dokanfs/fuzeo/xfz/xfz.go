@@ -228,12 +228,29 @@ type findFilesProcessData struct {
 	getattrResponses []*GetattrResponse
 }
 
+type findFilesProcessGetattrReq struct {
+	directiveHeader
+}
+
+var _ Directive = (*findFilesProcessGetattrReq)(nil)
+
+func (d *findFilesProcessGetattrReq) putDirectiveId(id DirectiveID) {
+	d.id = id
+}
+func (d *findFilesProcessGetattrReq) String() string {
+	return fmt.Sprintf("findFilesCompoundGetattrReq [%s]", d.Hdr())
+}
+func (d *findFilesProcessGetattrReq) IsDirectiveType() {}
+
 // Information on Windows API map to FUSE API > Step 4: Implementing FUSE Core
 // https://winfsp.dev/doc/SSHFS-Port-Case-Study/
+// https://winfsp.dev/doc/Native-API-vs-FUSE/
 // https://github.com/dokan-dev/dokany/wiki/FUSE
 
 // FindFiles maps to readdir, and getattr per file/directory.
-func makefindFilesCompound() *findFilesCompound {
+func makefindFilesCompound(ctx context.Context) *findFilesCompound {
+	type Cmd interface{}
+
 	type data = findFilesProcessData
 
 	type readdir struct {
@@ -254,9 +271,21 @@ func makefindFilesCompound() *findFilesCompound {
 		getattr *getattr
 	}
 
+	getattrReqCmd := func() Cmd {
+		d := &findFilesProcessGetattrReq{}
+		// file := d.file.(emptyFile)
+		// handle := file.handle
+		req = &GetattrRequest{
+			Header: makeHeaderWithDirective(d),
+			Handle: 0,
+			Flags:  0, // No handle GetattrFh,
+		}
+		diesm.PostDirective(ctx, d)
+	}
 	// Workflow
-	update := func(phase phase, data data) (updated data) {
+	update := func(phase phase, data data) (updated data, cmd Cmd) {
 		updated = data
+		cmd = nil
 		switch phase.kind {
 		case "readdir":
 			switch phase.readdir.kind {
@@ -266,6 +295,7 @@ func makefindFilesCompound() *findFilesCompound {
 			case "response":
 				fmt.Printf("findFilesProcess readdir (resp): %v\n", phase.readdir.resp)
 				updated.readResponse = phase.readdir.resp
+				cmd = getattrReqCmd()
 			}
 		case "getattr":
 			switch phase.getattr.kind {
@@ -342,8 +372,9 @@ func makefindFilesCompound() *findFilesCompound {
 
 	updateWith := func(arg processArg) {
 		phase := phaseWith(arg)
-		updated := update(phase, *getData())
+		updated, cmd := update(phase, *getData())
 		putData(&updated)
+
 	}
 
 	getState := func() processState {
@@ -742,11 +773,8 @@ type compound interface {
 
 type Directive interface {
 	putDirectiveId(id DirectiveID)
-	// Hdr returns the Header associated with this request.
+	// Hdr returns the Header associated with this directive.
 	Hdr() *directiveHeader
-
-	// RespondError responds to the request with the given error.
-	RespondError(error)
 
 	String() string
 
