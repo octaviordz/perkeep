@@ -70,6 +70,7 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	directive := &CreateFileDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
+			node: supplyNodeIdWithPath(fi.Path()),
 		},
 		CreateData: cd,
 	}
@@ -168,6 +169,7 @@ func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (
 	directive := &GetFileInformationDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
+			node: supplyNodeIdWithPath(fi.Path()),
 		},
 		file: t,
 	}
@@ -199,6 +201,7 @@ func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern st
 	directive := &FindFilesDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
+			node: supplyNodeIdWithPath(fi.Path()),
 		},
 		file:             t,
 		Pattern:          pattern,

@@ -49,10 +49,13 @@ func (m *directivesModule) getDirective(id DirectiveID) Directive {
 	return m.directives[id]
 }
 
-func (m *directivesModule) PostDirective(ctx context.Context, directive Directive) (Answer, error) {
+func (m *directivesModule) postDirectiveWith(ctx context.Context, directive Directive, sync bool) (Answer, error) {
 	id := m.putDirective(directive)
 	directive.putDirectiveId(id)
 	m.inBuffer <- directive
+	if sync == false {
+		return nil, nil
+	}
 	var resp Answer
 	for {
 		time.Sleep(20 * time.Millisecond)
@@ -67,6 +70,10 @@ func (m *directivesModule) PostDirective(ctx context.Context, directive Directiv
 	}
 
 	return resp, nil
+}
+
+func (m *directivesModule) PostDirective(ctx context.Context, directive Directive) (Answer, error) {
+	return m.postDirectiveWith(ctx, directive, true)
 }
 
 func (m *directivesModule) PostAnswer(fd *os.File, answer Answer) error {
@@ -163,14 +170,25 @@ func (m *requestsModule) requestId() RequestID {
 	return id
 }
 
-func makeHeaderWithDirective(directive Directive) Header {
-	h := directive.Hdr()
-	node := supplyNodeIdWithFileInfo(h.fileInfo)
+func makeHeaderWithDirectiveHeader(h directiveHeader) Header {
 	rid := retsm.requestId()
 	retsm.saveRequestId(rid, h.id)
 	return Header{
 		ID:   RequestID(rid),
-		Node: NodeID(node),
+		Node: NodeID(h.node),
+		// Uid:  uint32(h.ID),
+		// Gid:  h.Gid,
+		// Pid:  h.Pid,
+	}
+}
+
+func makeHeaderWithDirective(directive Directive) Header {
+	h := directive.Hdr()
+	rid := retsm.requestId()
+	retsm.saveRequestId(rid, h.id)
+	return Header{
+		ID:   RequestID(rid),
+		Node: NodeID(h.node),
 		// Uid:  uint32(h.ID),
 		// Gid:  h.Gid,
 		// Pid:  h.Pid,
@@ -246,7 +264,7 @@ func (d *findFilesProcessGetattrReq) IsDirectiveType() {}
 // https://winfsp.dev/doc/SSHFS-Port-Case-Study/
 // https://winfsp.dev/doc/Native-API-vs-FUSE/
 // https://github.com/dokan-dev/dokany/wiki/FUSE
-
+// https://github.com/winfsp/winfsp/blob/master/doc/WinFsp-Tutorial.asciidoc#readdirectory
 // FindFiles maps to readdir, and getattr per file/directory.
 func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 	type Cmd interface{}
@@ -271,16 +289,24 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		getattr *getattr
 	}
 
-	getattrReqCmd := func() Cmd {
-		d := &findFilesProcessGetattrReq{}
-		// file := d.file.(emptyFile)
-		// handle := file.handle
-		req = &GetattrRequest{
-			Header: makeHeaderWithDirective(d),
-			Handle: 0,
-			Flags:  0, // No handle GetattrFh,
+	getattrReqCmd := func(d *FindFilesDirective, dirent Dirent) Cmd {
+		return func() {
+			fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
+			// file := d.file.(emptyFile)
+			// handle := file.handle
+
+			// req = &GetattrRequest{
+			// 	Header: makeHeaderWithDirective(d),
+			// 	Handle: 0,
+			// 	Flags:  0, // No handle GetattrFh,
+			// }
+			di := &findFilesProcessGetattrReq{
+				directiveHeader: directiveHeader{
+					node: supplyNodeIdWithPath(fPath),
+				},
+			}
+			diesm.postDirectiveWith(ctx, di, false)
 		}
-		diesm.PostDirective(ctx, d)
 	}
 	// Workflow
 	update := func(phase phase, data data) (updated data, cmd Cmd) {
@@ -295,7 +321,8 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			case "response":
 				fmt.Printf("findFilesProcess readdir (resp): %v\n", phase.readdir.resp)
 				updated.readResponse = phase.readdir.resp
-				cmd = getattrReqCmd()
+				dirent := updated.readResponse.Entries[0]
+				cmd = getattrReqCmd(data.directive, dirent)
 			}
 		case "getattr":
 			switch phase.getattr.kind {
@@ -374,7 +401,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		phase := phaseWith(arg)
 		updated, cmd := update(phase, *getData())
 		putData(&updated)
-
+		Cmd.exec(cmd)
 	}
 
 	getState := func() processState {
@@ -757,6 +784,7 @@ type Response interface {
 type directiveHeader struct {
 	id       DirectiveID     // unique ID for request
 	fileInfo *dokan.FileInfo // file or directory the request is about
+	node     NodeID          // file or directory the request is about
 }
 
 func (h *directiveHeader) Hdr() *directiveHeader {
@@ -795,8 +823,11 @@ func mkAnswerHeader(response Response) directiveHeader {
 }
 
 func supplyNodeIdWithFileInfo(fi *dokan.FileInfo) NodeID {
+	return supplyNodeIdWithPath(fi.Path())
+}
+
+func supplyNodeIdWithPath(path string) NodeID {
 	var nid *NodeID = nil
-	path := fi.Path()
 
 	retsm.nodesMutex.Lock()
 	defer retsm.nodesMutex.Unlock()
@@ -1088,3 +1119,5 @@ var _ Answer = (*GetFileInformationAnswer)(nil)
 
 func (r *GetFileInformationAnswer) Hdr() *directiveHeader { return &r.directiveHeader }
 func (r *GetFileInformationAnswer) IsAnswerType()         {}
+
+// bazil.org/fuse. option https://github.com/jacobsa/fuse  (No Windows support)
