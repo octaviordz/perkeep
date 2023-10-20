@@ -16,24 +16,6 @@ var _ dokan.FileSystem = fileSystemInter{}
 
 type fileSystemInter struct{}
 
-func (t emptyFile) GetFileSecurity(ctx context.Context, fi *dokan.FileInfo, si winacl.SecurityInformation, sd *winacl.SecurityDescriptor) error {
-	debug("RFS.GetFileSecurity")
-	return nil
-}
-
-func (t emptyFile) SetFileSecurity(ctx context.Context, fi *dokan.FileInfo, si winacl.SecurityInformation, sd *winacl.SecurityDescriptor) error {
-	debug("RFS.SetFileSecurity")
-	return nil
-}
-
-func (t emptyFile) Cleanup(ctx context.Context, fi *dokan.FileInfo) {
-	debug("RFS.Cleanup")
-}
-
-func (t emptyFile) CloseFile(ctx context.Context, fi *dokan.FileInfo) {
-	debug("RFS.CloseFile")
-}
-
 func (t fileSystemInter) WithContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return ctx, nil
 }
@@ -70,7 +52,7 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	directive := &CreateFileDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
-			node: supplyNodeIdWithPath(fi.Path()),
+			node:     supplyNodeIdWithPath(fi.Path()),
 		},
 		CreateData: cd,
 	}
@@ -124,6 +106,12 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	return a.File, a.CreateStatus, nil
 }
 
+type emptyFile struct {
+	handle HandleID
+}
+
+var _ dokan.File = emptyFile{}
+
 func (t emptyFile) CanDeleteFile(ctx context.Context, fi *dokan.FileInfo) error {
 	return dokan.ErrAccessDenied
 }
@@ -160,8 +148,22 @@ func (t emptyFile) FlushFileBuffers(ctx context.Context, fi *dokan.FileInfo) err
 	return nil
 }
 
-type emptyFile struct {
-	handle HandleID
+func (t emptyFile) GetFileSecurity(ctx context.Context, fi *dokan.FileInfo, si winacl.SecurityInformation, sd *winacl.SecurityDescriptor) error {
+	debug("RFS.GetFileSecurity")
+	return nil
+}
+
+func (t emptyFile) SetFileSecurity(ctx context.Context, fi *dokan.FileInfo, si winacl.SecurityInformation, sd *winacl.SecurityDescriptor) error {
+	debug("RFS.SetFileSecurity")
+	return nil
+}
+
+func (t emptyFile) Cleanup(ctx context.Context, fi *dokan.FileInfo) {
+	debugf("RFS.Cleanup\n# [%s]\n", fi.Path())
+}
+
+func (t emptyFile) CloseFile(ctx context.Context, fi *dokan.FileInfo) {
+	debugf("RFS.CloseFile\n# [%s]\n", fi.Path())
 }
 
 func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (*dokan.Stat, error) {
@@ -169,7 +171,7 @@ func (t emptyFile) GetFileInformation(ctx context.Context, fi *dokan.FileInfo) (
 	directive := &GetFileInformationDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
-			node: supplyNodeIdWithPath(fi.Path()),
+			node:     supplyNodeIdWithPath(fi.Path()),
 		},
 		file: t,
 	}
@@ -201,7 +203,7 @@ func (t emptyFile) FindFiles(ctx context.Context, fi *dokan.FileInfo, pattern st
 	directive := &FindFilesDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
-			node: supplyNodeIdWithPath(fi.Path()),
+			node:     supplyNodeIdWithPath(fi.Path()),
 		},
 		file:             t,
 		Pattern:          pattern,

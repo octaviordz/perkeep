@@ -61,8 +61,17 @@ func (m *directivesModule) postDirectiveWith(ctx context.Context, directive Dire
 		time.Sleep(20 * time.Millisecond)
 		//TODO(ORC): How long should we wait/loop
 		// and what error should be produced.
+		if m == nil {
+			debug(m)
+		}
 		resp = <-m.outBuffer
+		if resp == nil {
+			debug(m)
+		}
 		h := resp.Hdr()
+		if h == nil {
+			debug(m)
+		}
 		if h.id == id {
 			break
 		}
@@ -170,22 +179,11 @@ func (m *requestsModule) requestId() RequestID {
 	return id
 }
 
-func makeHeaderWithDirectiveHeader(h directiveHeader) Header {
-	rid := retsm.requestId()
-	retsm.saveRequestId(rid, h.id)
-	return Header{
-		ID:   RequestID(rid),
-		Node: NodeID(h.node),
-		// Uid:  uint32(h.ID),
-		// Gid:  h.Gid,
-		// Pid:  h.Pid,
-	}
-}
-
 func makeHeaderWithDirective(directive Directive) Header {
 	h := directive.Hdr()
 	rid := retsm.requestId()
-	retsm.saveRequestId(rid, h.id)
+	pid := directive.principalDirectiveId()
+	retsm.saveRequestId(rid, pid)
 	return Header{
 		ID:   RequestID(rid),
 		Node: NodeID(h.node),
@@ -248,10 +246,14 @@ type findFilesProcessData struct {
 
 type findFilesProcessGetattrReq struct {
 	directiveHeader
+	_principalDirectiveId DirectiveID
 }
 
 var _ Directive = (*findFilesProcessGetattrReq)(nil)
 
+func (d *findFilesProcessGetattrReq) principalDirectiveId() DirectiveID {
+	return d._principalDirectiveId
+}
 func (d *findFilesProcessGetattrReq) putDirectiveId(id DirectiveID) {
 	d.id = id
 }
@@ -267,7 +269,7 @@ func (d *findFilesProcessGetattrReq) IsDirectiveType() {}
 // https://github.com/winfsp/winfsp/blob/master/doc/WinFsp-Tutorial.asciidoc#readdirectory
 // FindFiles maps to readdir, and getattr per file/directory.
 func makefindFilesCompound(ctx context.Context) *findFilesCompound {
-	type Cmd interface{}
+	type Cmd = func()
 
 	type data = findFilesProcessData
 
@@ -304,10 +306,12 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				directiveHeader: directiveHeader{
 					node: supplyNodeIdWithPath(fPath),
 				},
+				_principalDirectiveId: d.id,
 			}
 			diesm.postDirectiveWith(ctx, di, false)
 		}
 	}
+
 	// Workflow
 	update := func(phase phase, data data) (updated data, cmd Cmd) {
 		updated = data
@@ -334,6 +338,10 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				updated.getattrResponses = append(updated.getattrResponses, phase.getattr.resp)
 				if len(data.getattrResponses) == len(data.readResponse.Entries) {
 					updated.processState = processStateSettled
+				} else {
+					idx := len(data.getattrResponses) + 1
+					dirent := updated.readResponse.Entries[idx]
+					cmd = getattrReqCmd(data.directive, dirent)
 				}
 			}
 		}
@@ -393,15 +401,23 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 	putData := func(data *data) {
 		_data = data
 	}
+
 	getData := func() *data {
 		return _data
+	}
+
+	execCmd := func(cmd Cmd) {
+		if cmd == nil {
+			return
+		}
+		cmd()
 	}
 
 	updateWith := func(arg processArg) {
 		phase := phaseWith(arg)
 		updated, cmd := update(phase, *getData())
 		putData(&updated)
-		Cmd.exec(cmd)
+		execCmd(cmd)
 	}
 
 	getState := func() processState {
@@ -498,6 +514,15 @@ func (rrm *requestResponseModule) ReadRequest(fd *os.File) (req Request, err err
 	switch d := d.(type) {
 	default:
 		return nil, fmt.Errorf("not implemented")
+	//#region Compound related requests
+	case *findFilesProcessGetattrReq:
+		req = &GetattrRequest{
+			Header: makeHeaderWithDirective(d),
+			Flags:  0, // no handle GetattrFh
+		}
+		err = nil
+		return
+	//#endregion
 	case *CreateFileDirective:
 		// fuse_operations::mknod
 		// fuse_operations::create
@@ -599,9 +624,9 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		file := makeFileWithHandle(r.Handle)
 
 		a := &CreateFileAnswer{
-			directiveHeader: mkAnswerHeader(r),
-			File:            file,
-			CreateStatus:    createStatus,
+			answerHeader: mkAnswerHeader(r),
+			File:         file,
+			CreateStatus: createStatus,
 		}
 		answer = a
 		// dokan.CreateStatus(dokan.ErrAccessDenied)
@@ -630,8 +655,8 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 			}
 			readResp := d.compound.getReadResponse()
 			a := &FindFilesAnswer{
-				directiveHeader: mkAnswerHeader(readResp),
-				Items:           make([]dokan.NamedStat, len(readResp.Entries)),
+				answerHeader: mkAnswerHeader(readResp),
+				Items:        make([]dokan.NamedStat, len(readResp.Entries)),
 			}
 			answer = a
 			namedStat := dokan.NamedStat{
@@ -675,7 +700,7 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 			// Flags     uint32      // chflags(2) flags (OS X only)
 			// BlockSize uint32      // preferred blocksize for filesystem I/O
 			a := &GetFileInformationAnswer{
-				directiveHeader: mkAnswerHeader(r),
+				answerHeader: mkAnswerHeader(r),
 				Stat: &dokan.Stat{
 					Creation:       r.Attr.Crtime,
 					LastAccess:     r.Attr.Atime,
@@ -709,8 +734,8 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 
 			debugf("WriteRespond fuse_operations::readdir")
 			a := &FindFilesAnswer{
-				directiveHeader: mkAnswerHeader(r),
-				Items:           make([]dokan.NamedStat, len(r.Entries)),
+				answerHeader: mkAnswerHeader(r),
+				Items:        make([]dokan.NamedStat, len(r.Entries)),
 			}
 			answer = a
 			namedStat := dokan.NamedStat{
@@ -735,6 +760,13 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		}
 	}
 
+	if answer == nil {
+		r := resp
+		rid := RequestID(r.GetId())
+		id := retsm.getDirectiveId(rid)
+		directive := diesm.getDirective(DirectiveID(id))
+		debug(directive)
+	}
 	return diesm.PostAnswer(fd, answer)
 }
 
@@ -756,7 +788,7 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 // answer reaction
 type Answer interface {
 	IsAnswerType()
-	Hdr() *directiveHeader
+	Hdr() *answerHeader
 }
 
 type ResponseHeader struct {
@@ -782,9 +814,13 @@ type Response interface {
 
 // A Header describes the basic information sent in every request.
 type directiveHeader struct {
-	id       DirectiveID     // unique ID for request
+	id       DirectiveID     // unique ID for directive
 	fileInfo *dokan.FileInfo // file or directory the request is about
 	node     NodeID          // file or directory the request is about
+}
+
+type answerHeader struct {
+	id DirectiveID // unique ID for request
 }
 
 func (h *directiveHeader) Hdr() *directiveHeader {
@@ -800,6 +836,7 @@ type compound interface {
 }
 
 type Directive interface {
+	principalDirectiveId() DirectiveID
 	putDirectiveId(id DirectiveID)
 	// Hdr returns the Header associated with this directive.
 	Hdr() *directiveHeader
@@ -807,18 +844,15 @@ type Directive interface {
 	String() string
 
 	IsDirectiveType()
-
-	// compound() compound
 }
 
-func mkAnswerHeader(response Response) directiveHeader {
+func mkAnswerHeader(response Response) answerHeader {
 	rid := RequestID(response.GetId())
 	id := retsm.getDirectiveId(rid)
 	d := diesm.getDirective(id)
 	h := d.Hdr()
-	return directiveHeader{
-		id:       h.id,
-		fileInfo: h.fileInfo,
+	return answerHeader{
+		id: h.id,
 	}
 }
 
@@ -883,6 +917,9 @@ type CreateFileDirective struct {
 
 var _ Directive = (*CreateFileDirective)(nil)
 
+func (d *CreateFileDirective) principalDirectiveId() DirectiveID {
+	return d.id
+}
 func (d *CreateFileDirective) putDirectiveId(id DirectiveID) { d.id = id }
 func (d *CreateFileDirective) RespondError(error)            {}
 func (d *CreateFileDirective) String() string {
@@ -1003,7 +1040,7 @@ func (d *CreateFileDirective) makeRequest() Request {
 }
 
 type CreateFileAnswer struct {
-	directiveHeader
+	answerHeader
 	dokan.File
 	dokan.CreateStatus
 	//error
@@ -1011,8 +1048,8 @@ type CreateFileAnswer struct {
 
 var _ Answer = (*CreateFileAnswer)(nil)
 
-func (r *CreateFileAnswer) Hdr() *directiveHeader { return &r.directiveHeader }
-func (r *CreateFileAnswer) IsAnswerType()         {}
+func (r *CreateFileAnswer) Hdr() *answerHeader { return &r.answerHeader }
+func (r *CreateFileAnswer) IsAnswerType()      {}
 
 type findFilesCompound struct {
 	processor *processor[*findFilesProcessData]
@@ -1072,6 +1109,9 @@ type FindFilesDirective struct {
 
 var _ Directive = (*FindFilesDirective)(nil)
 
+func (d *FindFilesDirective) principalDirectiveId() DirectiveID {
+	return d.id
+}
 func (d *FindFilesDirective) putDirectiveId(id DirectiveID) {
 	d.id = id
 	d.compound.processor.init(d)
@@ -1086,14 +1126,14 @@ func (d *FindFilesDirective) getCompound() compound { return d.compound }
 func (d *FindFilesDirective) isProcessArg()         {}
 
 type FindFilesAnswer struct {
-	directiveHeader
+	answerHeader
 	Items []dokan.NamedStat
 }
 
 var _ Answer = (*FindFilesAnswer)(nil)
 
-func (r *FindFilesAnswer) Hdr() *directiveHeader { return &r.directiveHeader }
-func (r *FindFilesAnswer) IsAnswerType()         {}
+func (r *FindFilesAnswer) Hdr() *answerHeader { return &r.answerHeader }
+func (r *FindFilesAnswer) IsAnswerType()      {}
 
 type GetFileInformationDirective struct {
 	directiveHeader
@@ -1102,6 +1142,9 @@ type GetFileInformationDirective struct {
 
 var _ Directive = (*GetFileInformationDirective)(nil)
 
+func (d *GetFileInformationDirective) principalDirectiveId() DirectiveID {
+	return d.id
+}
 func (r *GetFileInformationDirective) putDirectiveId(id DirectiveID) { r.id = id }
 func (r *GetFileInformationDirective) RespondError(error)            {}
 func (r *GetFileInformationDirective) String() string {
@@ -1111,13 +1154,13 @@ func (r *GetFileInformationDirective) String() string {
 func (d *GetFileInformationDirective) IsDirectiveType() {}
 
 type GetFileInformationAnswer struct {
-	directiveHeader
+	answerHeader
 	Stat *dokan.Stat
 }
 
 var _ Answer = (*GetFileInformationAnswer)(nil)
 
-func (r *GetFileInformationAnswer) Hdr() *directiveHeader { return &r.directiveHeader }
-func (r *GetFileInformationAnswer) IsAnswerType()         {}
+func (r *GetFileInformationAnswer) Hdr() *answerHeader { return &r.answerHeader }
+func (r *GetFileInformationAnswer) IsAnswerType()      {}
 
 // bazil.org/fuse. option https://github.com/jacobsa/fuse  (No Windows support)

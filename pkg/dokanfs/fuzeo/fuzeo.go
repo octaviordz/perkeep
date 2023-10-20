@@ -1096,15 +1096,12 @@ func (r *ReadRequest) Respond(resp *ReadResponse) {
 	// buf = append(buf, resp.Data...)
 	// r.respond(buf)
 	outEntries := make([]xfz.Dirent, len(resp.DirEntries))
-	for _, it := range resp.DirEntries {
-		outEntries = append(
-			outEntries,
-			xfz.Dirent{
-				Inode: it.Inode,
-				Type:  xfz.DirentType(it.Type),
-				Name:  it.Name,
-			},
-		)
+	for idx, it := range resp.DirEntries {
+		outEntries[idx] = xfz.Dirent{
+			Inode: it.Inode,
+			Type:  xfz.DirentType(it.Type),
+			Name:  it.Name,
+		}
 	}
 	var outResp xfz.Response = &xfz.ReadResponse{
 		Entries: outEntries,
