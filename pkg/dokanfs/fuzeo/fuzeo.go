@@ -288,11 +288,16 @@ func ToErrno(err error) Errno {
 
 func (h *Header) RespondError(err error) {
 	errno := ToErrno(err)
-	// FUSE uses negative errors!
-	buf := newBuffer(0)
-	hOut := (*outHeader)(unsafe.Pointer(&buf[0]))
-	hOut.Error = -int32(errno)
-	h.respond(buf)
+	// // FUSE uses negative errors!
+	// buf := newBuffer(0)
+	// hOut := (*outHeader)(unsafe.Pointer(&buf[0]))
+	// hOut.Error = -int32(errno)
+	// h.respond(buf)
+	var outResp xfz.Response = &xfz.ErrorResponse{
+		Error: err,
+		Errno: -int32(errno),
+	}
+	h.respondi(outResp)
 }
 
 // All requests read from the kernel, without data, are shorter than

@@ -1043,6 +1043,7 @@ type Request interface {
 	String() string
 
 	// IsRequestType()
+	// isProcessArg()
 }
 
 // A RequestID identifies an active FUSE request.
@@ -1703,7 +1704,7 @@ func (r *GetattrResponse) GetId() uint64   { return uint64(r.Id) }
 func (d *GetattrResponse) isProcessArg()   {}
 
 func mkFileAttributesWithAttr(attr Attr) dokan.FileAttribute {
-	// FileAttributeReadonly = FileAttribute(0x00000001)
+	// FileAttributeReadonly = FileAttribute(0x00000001)FileAttributeReadonly
 	// FileAttributeHidden = FileAttribute(0x00000002)
 	// FileAttributeSystem = FileAttribute(0x00000004)
 	// FileAttributeDirectory = FileAttribute(0x00000010)
@@ -1930,6 +1931,7 @@ var _ = Request(&OpenRequest{})
 func (r *OpenRequest) String() string {
 	return fmt.Sprintf("Open [%s] dir=%v fl=%v", &r.Header, r.Dir, r.Flags)
 }
+func (d *OpenRequest) isProcessArg() {}
 
 // A OpenResponse is the response to a OpenRequest.
 type OpenResponse struct {
@@ -1949,6 +1951,7 @@ func (r *OpenResponse) String() string {
 func (r *OpenResponse) IsResponseType() {}
 func (r *OpenResponse) PutId(id uint64) { r.Id = RequestID(id) }
 func (r *OpenResponse) GetId() uint64   { return uint64(r.Id) }
+func (d *OpenResponse) isProcessArg()   {}
 
 // A CreateRequest asks to create and open a file (not a directory).
 type CreateRequest struct {
