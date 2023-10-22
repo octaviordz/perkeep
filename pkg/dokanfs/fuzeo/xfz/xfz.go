@@ -247,6 +247,70 @@ func execCmd(dispatch Dispatch, cmd Cmd) {
 	}
 }
 
+type Unsubscriber = func()
+
+type SubId = uint8
+
+type Subscribe = func(dispatch Dispatch) Unsubscriber
+
+type Subent struct {
+	SubId
+	Subscribe
+}
+
+type Sub = []Subent
+
+type Subedent struct {
+	SubId
+	Unsubscriber
+}
+
+type diffSubsResult struct {
+	dupes   Sub
+	toStop  Sub
+	toKeep  []Subedent
+	toStart []Subent
+}
+
+func diffSubs(activeSubs []Subedent, sub Sub) diffSubsResult {
+	// let keys = activeSubs |> List.map fst |> Set.ofList
+	// let dupes, newKeys, newSubs = NewSubs.calculate sub
+	// if keys = newKeys then
+	//     dupes, [], activeSubs, []
+	// else
+	//     let toKeep, toStop = activeSubs |> List.partition (fun (k, _) -> Set.contains k newKeys)
+	//     let toStart = newSubs |> List.filter (fun (k, _) -> not (Set.contains k keys))
+	//     dupes, toStop, toKeep, toStart
+
+	r := diffSubsResult{
+		toKeep:  activeSubs,
+		toStart: []Subent{},
+	}
+	return r
+}
+
+func changeSubs(dispatch Dispatch, diffResult diffSubsResult) []Subedent {
+	r := []Subedent{}
+	// let change onError dispatch (dupes, toStop, toKeep, toStart) =
+	// dupes |> List.iter (warnDupe onError)
+	// toStop |> List.iter (tryStop onError)
+	// let started = toStart |> List.choose (tryStart onError dispatch)
+	// List.append toKeep started
+	for _, subent := range diffResult.toStart {
+		id := subent.SubId
+		start := subent.Subscribe
+		unsub := start(dispatch)
+		r = append(r, Subedent{id, unsub})
+	}
+	return r
+}
+
+// let change onError dispatch (dupes, toStop, toKeep, toStart) =
+// dupes |> List.iter (warnDupe onError)
+// toStop |> List.iter (tryStop onError)
+// let started = toStart |> List.choose (tryStart onError dispatch)
+// List.append toKeep started
+
 type process[Tdata any] struct {
 	init       func(processArg) (Tdata, Cmd)
 	putData    func(Tdata)
@@ -254,6 +318,7 @@ type process[Tdata any] struct {
 	getState   func() processState
 	update     func(note any, data Tdata) (Tdata, Cmd)
 	updateWith func(processArg)
+	subscribe  func(data Tdata) Sub
 }
 
 type processor[Tdata any] struct {
@@ -283,11 +348,11 @@ func (p *processor[Tdata]) init(arg processArg) {
 		processNote func()
 	)
 	rb := ringBuffer{}
-
 	data, cmd := p.process.init(arg)
+	sub := p.process.subscribe(data)
 	reentered := false
 	state := data
-
+	activeSubs := []Subedent{}
 	dispatch = func(note any) {
 		rb.push(note)
 		if !reentered {
@@ -306,17 +371,19 @@ func (p *processor[Tdata]) init(arg processArg) {
 			}
 			note := nextNote
 			data, cmd := p.process.update(note, state)
+			sub := p.process.subscribe(data)
 			p.process.putData(data)
-
 			execCmd(dispatch, cmd)
-
 			state = data
+			// activeSubs <- Subs.diff activeSubs sub' |> Subs.Fx.change program.onError dispatch'
+			activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
 			nextNote = rb.pop()
 		}
 	}
 	reentered = true
 	p.process.putData(data)
 	execCmd(dispatch, cmd)
+	activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
 	processNote()
 	reentered = false
 }
@@ -324,9 +391,11 @@ func (p *processor[Tdata]) init(arg processArg) {
 func (p *processor[Tdata]) step(arg processArg) {
 	p.process.updateWith(arg)
 }
+
 func (p *processor[Tdata]) fetch() Tdata {
 	return p.process.getData()
 }
+
 func (p *processor[Tdata]) state() processState {
 	return p.process.getState()
 }
@@ -677,6 +746,30 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return
 	}
 
+	// let timer onTick =
+	// 	let start dispatch =
+	// 		let intervalId =
+	// 			JS.setInterval
+	// 				(fun _ -> dispatch (onTick DateTime.Now))
+	// 				1000
+	// 		{ new IDisposable with
+	// 			member _.Dispose() = JS.clearInterval intervalId }
+	// 	start
+	subWith := func() Subscribe {
+		start := func(dispatch Dispatch) Unsubscriber {
+			s := func() {}
+			return s
+		}
+		return start
+	}
+
+	subscribe := func(data *findFilesProcessData) Sub {
+		// [ ["timer"], subUpdateWith Tick ]
+		subent := Subent{1, subWith()}
+		r := []Subent{subent}
+		return r
+	}
+
 	var _data *findFilesProcessData
 	putData := func(data *findFilesProcessData) {
 		_data = data
@@ -691,12 +784,12 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			dispatch    func(note any)
 			processNote func()
 		)
-		note := noteWith(arg)
-		updated, cmd := update(note, *getData())
+		note_ := noteWith(arg)
+		updated, cmd := update(note_, *getData())
 		putData(&updated)
 
 		rb := ringBuffer{}
-		data, cmd := p.process.init(arg)
+		data, cmd := init(arg)
 		reentered := false
 		state := data
 
@@ -716,18 +809,18 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				if nextNote == nil {
 					break
 				}
-				note := nextNote
-				data, cmd := p.process.update(note, state)
-				p.process.putData(data)
+				note_ := nextNote.(note)
+				data, cmd := update(note_, *state)
+				putData(&data)
 
 				execCmd(dispatch, cmd)
 
-				state = data
+				state = &data
 				nextNote = rb.pop()
 			}
 		}
 		reentered = true
-		p.process.putData(data)
+		putData(data)
 		execCmd(dispatch, cmd)
 		processNote()
 		reentered = false
@@ -747,6 +840,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		init:       init,
 		updateWith: updateWith,
 		update:     update_,
+		subscribe:  subscribe,
 		putData:    putData,
 		getData:    getData,
 		getState:   getState,
