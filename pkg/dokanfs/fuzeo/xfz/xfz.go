@@ -93,7 +93,7 @@ func (m *directivesModule) postDirectiveWith(arg postDirectiveWithArg) (Answer, 
 func (m *directivesModule) initWithDirective(directive Directive) DirectiveID {
 	id := m.putDirective(directive)
 	directive.putDirectiveId(id)
-	directive.initProcessor()
+	directive.startProcessor()
 	return id
 }
 
@@ -212,6 +212,7 @@ func makeHeaderWith(node NodeID, directive Directive) Header {
 		// Pid:  h.Pid,
 	}
 }
+
 func makeHeaderWithDirective(directive Directive) Header {
 	h := directive.Hdr()
 	return makeHeaderWith(h.node, directive)
@@ -238,11 +239,16 @@ type Effect = func(dispatch Dispatch)
 
 type Cmd = []Effect
 
+var CmdNone = []Effect{}
+
 func execCmd(dispatch Dispatch, cmd Cmd) {
 	if cmd == nil {
 		return
 	}
 	for _, call := range cmd {
+		if call == nil || dispatch == nil {
+			continue
+		}
 		call(dispatch)
 	}
 }
@@ -342,7 +348,7 @@ func (x ringBuffer) pop() any {
 	return nil
 }
 
-func (p *processor[Tdata]) init(arg processArg) {
+func (p *processor[Tdata]) start(arg processArg) {
 	var (
 		dispatch    func(note any)
 		processNote func()
@@ -409,7 +415,8 @@ const (
 	findFilesNoteKindOpenResp    = findFilesNoteKind(0b00100010)
 	findFilesNoteKindGetattrReq  = findFilesNoteKind(0b00110001)
 	findFilesNoteKindGetattrResp = findFilesNoteKind(0b00110010)
-	findFilesNoteKindEnqueuReq   = findFilesNoteKind(0b10000001)
+	findFilesNoteKindPush        = findFilesNoteKind(0b10001000)
+	findFilesNoteKindEnqueuReq   = findFilesNoteKind(0b10001111)
 )
 
 type findFilesProcessData struct {
@@ -468,7 +475,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		req Request
 	}
 
-	type phaseReaddir struct {
+	type readdir struct {
 		req  *ReadRequest
 		resp *ReadResponse
 	}
@@ -496,7 +503,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 	type note struct {
 		kind       findFilesNoteKind
 		enqueueReq *enqueueReq
-		readdir    *phaseReaddir
+		readdir    *readdir
 		open       *open
 		getattr    *getattr
 	}
@@ -509,7 +516,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 	}
 
 	batchCmd := func(cmds []Cmd) Cmd {
-		var result Cmd = make([]Effect, len(cmds))
+		var result Cmd = make(Cmd, len(cmds))
 		for _, cmd := range cmds {
 			result = append(result, cmd...)
 		}
@@ -534,7 +541,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				processState: processStatePending,
 				reqR:         ring.New(0),
 				directive:    d,
-				readRequest:  readRequest,
+				// readRequest:  readRequest,
 			}
 			// Enqueue and set ReadRequest
 			cmd = batchCmd([]Cmd{
@@ -542,7 +549,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 					enqueueReq: &enqueueReq{req: readRequest},
 				}),
 				cmdOfNote(note{kind: readdirReq,
-					readdir: &phaseReaddir{req: readRequest},
+					readdir: &readdir{req: readRequest},
 				}),
 			})
 		}
@@ -554,14 +561,14 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		case *ReadRequest:
 			r = note{
 				kind: findFilesNoteKindReaddirReq,
-				readdir: &phaseReaddir{
+				readdir: &readdir{
 					req: arg,
 				},
 			}
 		case *ReadResponse:
 			r = note{
 				kind: findFilesNoteKindReaddirResp,
-				readdir: &phaseReaddir{
+				readdir: &readdir{
 					resp: arg,
 				},
 			}
@@ -597,10 +604,13 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return
 	}
 
-	openReqCmd := func(d *FindFilesDirective, dirent Dirent) Cmd {
+	openReqCmd := func(data *findFilesProcessData) Cmd {
+		d := data.directive
+		idx := len(data.openRequests)
+		dirent := data.readResponse.Entries[idx]
 		fxi := func(dispatch Dispatch) {
 			fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
-			isDir := fileInfos.isDir(d.Hdr().fileInfo)
+			isDir := fileInfos.isDir(fPath)
 			node := supplyNodeIdWithPath(fPath)
 			openReq := &OpenRequest{
 				Header:    makeHeaderWith(node, d),
@@ -619,7 +629,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				sync:      false,
 			}
 			diesm.postDirectiveWith(arg)
-			dispatch(nil)
+			dispatch(CmdNone)
 		}
 		return batchCmd([]Cmd{[]Effect{fxi}, []Effect{fxj}})
 	}
@@ -669,15 +679,20 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 	// 	return []Effect{f}
 	// }
 
-	getattrReqCmd := func(d *FindFilesDirective, dirent Dirent) Cmd {
+	getattrReqCmd := func(data *findFilesProcessData) Cmd {
+		d := data.directive
+		idx := len(data.getattrRequests)
+		openResp := data.openResponses[idx]
 		fxi := func(dispatch Dispatch) {
-			// TODO(OR): Is there a file/handle
-			// file := d.file.(emptyFile)
-			// handle := file.handle
+			handle := openResp.Handle
+			flags := GetattrFh
+			if handle == 0 {
+				flags = 0
+			}
 			req := &GetattrRequest{
 				Header: makeHeaderWithDirective(d),
-				Handle: 0,
-				Flags:  0, // No handle GetattrFh,
+				Handle: handle,
+				Flags:  flags,
 			}
 			dispatch(note{kind: nkEnqueueReq,
 				enqueueReq: &enqueueReq{req: req},
@@ -690,7 +705,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				sync:      false,
 			}
 			diesm.postDirectiveWith(arg)
-			dispatch(nil)
+			dispatch(CmdNone)
 		}
 		return batchCmd([]Cmd{[]Effect{fxi}, []Effect{fxj}})
 	}
@@ -709,56 +724,71 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		case readdirResp:
 			fmt.Printf("findFilesProcess readdir (resp): %v\n", note.readdir.resp)
 			updated.readResponse = note.readdir.resp
-			dirent := updated.readResponse.Entries[0]
-			cmd = openReqCmd(data.directive, dirent)
-
+			cmd = openReqCmd(&updated)
 		case openReq:
 			fmt.Printf("findFilesProcess open (req): %v\n", note.open.req)
 			updated.openRequests = append(updated.openRequests, note.open.req)
 		case openResp:
 			fmt.Printf("findFilesProcess open (resp): %v\n", note.open.resp)
-			updated.readResponse = note.readdir.resp
-			dirent := updated.readResponse.Entries[0]
-			cmd = getattrReqCmd(data.directive, dirent)
-
 			updated.openResponses = append(updated.openResponses, note.open.resp)
 			if len(data.openResponses) == len(data.readResponse.Entries) {
-				updated.processState = processStateSettled
+				cmd = getattrReqCmd(&updated)
 			} else {
-				idx := len(data.openResponses) + 1
-				dirent := updated.readResponse.Entries[idx]
-				cmd = getattrReqCmd(data.directive, dirent)
+				cmd = batchCmd([]Cmd{
+					openReqCmd(&data), getattrReqCmd(&updated)})
+				debugf("cmd %v", cmd)
 			}
 		case getattrReq:
 			fmt.Printf("findFilesProcess getattr (req): %v\n", note.getattr.req)
 			updated.getattrRequests = append(updated.getattrRequests, note.getattr.req)
 		case getattrResp:
+			// var (
+			// 	req  *OpenRequest
+			// 	resp *OpenResponse
+			// )
 			fmt.Printf("findFilesProcess getattr (resp): %v\n", note.getattr.resp)
 			updated.getattrResponses = append(updated.getattrResponses, note.getattr.resp)
 			if len(data.getattrResponses) == len(data.readResponse.Entries) {
 				updated.processState = processStateSettled
 			} else {
-				idx := len(data.getattrResponses) + 1
-				dirent := updated.readResponse.Entries[idx]
-				cmd = getattrReqCmd(data.directive, dirent)
+				// idx := len(data.getattrResponses) + 1
+				// dirent := updated.readResponse.Entries[idx]
+				// fPath := filepath.Join(data.directive.fileInfo.Path(), dirent.Name)
+				// node := supplyNodeIdWithPath(fPath)
+				// for _, openReq := range data.openRequests {
+				// 	if openReq.Node == node {
+				// 		req = openReq
+				// 	}
+				// }
+				// for _, openResp := range data.openResponses {
+				// 	if openResp.Id == req.ID {
+				// 		resp = openResp
+				// 	}
+				// }
+				// if resp == nil {
+				// 	debug(resp)
+				// }
+				cmd = getattrReqCmd(&data)
 			}
 		}
 		return
 	}
 
-	// let timer onTick =
-	// 	let start dispatch =
-	// 		let intervalId =
-	// 			JS.setInterval
-	// 				(fun _ -> dispatch (onTick DateTime.Now))
-	// 				1000
-	// 		{ new IDisposable with
-	// 			member _.Dispose() = JS.clearInterval intervalId }
-	// 	start
+	var __dispatch Dispatch
+	_dispatch := func(note note) {
+		if __dispatch == nil {
+			return
+		}
+		__dispatch(note)
+	}
+
 	subWith := func() Subscribe {
 		start := func(dispatch Dispatch) Unsubscriber {
-			s := func() {}
-			return s
+			__dispatch = dispatch
+			unsub := func() {
+				__dispatch = nil
+			}
+			return unsub
 		}
 		return start
 	}
@@ -780,50 +810,51 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 	}
 
 	updateWith := func(arg processArg) {
-		var (
-			dispatch    func(note any)
-			processNote func()
-		)
-		note_ := noteWith(arg)
-		updated, cmd := update(note_, *getData())
-		putData(&updated)
+		// var (
+		// 	dispatch    func(note any)
+		// 	processNote func()
+		// )
+		note := noteWith(arg)
+		_dispatch(note)
+		// updated, cmd := update(note_, *getData())
+		// putData(&updated)
 
-		rb := ringBuffer{}
-		data, cmd := init(arg)
-		reentered := false
-		state := data
+		// rb := ringBuffer{}
+		// data, cmd := init(arg)
+		// reentered := false
+		// state := data
 
-		dispatch = func(note any) {
-			rb.push(note)
-			if !reentered {
-				reentered = true
-				processNote()
-				reentered = false
-			} else {
-				debug(reentered)
-			}
-		}
-		processNote = func() {
-			nextNote := rb.pop()
-			for {
-				if nextNote == nil {
-					break
-				}
-				note_ := nextNote.(note)
-				data, cmd := update(note_, *state)
-				putData(&data)
+		// dispatch = func(note any) {
+		// 	rb.push(note)
+		// 	if !reentered {
+		// 		reentered = true
+		// 		processNote()
+		// 		reentered = false
+		// 	} else {
+		// 		debug(reentered)
+		// 	}
+		// }
+		// processNote = func() {
+		// 	nextNote := rb.pop()
+		// 	for {
+		// 		if nextNote == nil {
+		// 			break
+		// 		}
+		// 		note_ := nextNote.(note)
+		// 		data, cmd := update(note_, *state)
+		// 		putData(&data)
 
-				execCmd(dispatch, cmd)
+		// 		execCmd(dispatch, cmd)
 
-				state = &data
-				nextNote = rb.pop()
-			}
-		}
-		reentered = true
-		putData(data)
-		execCmd(dispatch, cmd)
-		processNote()
-		reentered = false
+		// 		state = &data
+		// 		nextNote = rb.pop()
+		// 	}
+		// }
+		// reentered = true
+		// putData(data)
+		// execCmd(dispatch, cmd)
+		// processNote()
+		// reentered = false
 	}
 
 	getState := func() processState {
@@ -922,12 +953,17 @@ var Requests = &requestResponseModule{}
 
 func (rrm *requestResponseModule) ReadRequest(fd *os.File) (req Request, err error) {
 
-	d := <-diesm.inBuffer
-	debugf("## ReadRequest\n > %v\n", d)
+	directive := <-diesm.inBuffer
+	debugf("## ReadRequest\n > %v\n", directive)
 
-	switch d := d.(type) {
+	switch d := directive.(type) {
 	default:
-		return nil, fmt.Errorf("not implemented")
+		req = directive.nextReq()
+		if req == nil {
+			debug(req)
+			err = fmt.Errorf("not implemented")
+		}
+		return
 	//#region Compound related requests
 	// case *findFilesProcessOpenReq:
 	// 	req = &OpenRequest{
@@ -953,7 +989,7 @@ func (rrm *requestResponseModule) ReadRequest(fd *os.File) (req Request, err err
 		// fuse_operations::opendir
 		// fuse_operations::open
 		cd := d.CreateData
-		isDir := fileInfos.isDir(d.Hdr().fileInfo)
+		isDir := fileInfos.isDirWithFileInfo(d.Hdr().fileInfo)
 		if isDir {
 			if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
 				debugf("ReadRequest fuse_operations::opendir")
@@ -988,28 +1024,12 @@ func (rrm *requestResponseModule) ReadRequest(fd *os.File) (req Request, err err
 		}
 		err = fmt.Errorf("not implemented")
 		return
-	case *GetFileInformationDirective:
-		handles := retsm.getHandleByPath(d.fileInfo.Path())
-		if len(handles) <= 0 {
-			debugf("ReadRequest len(handles) <= 0; %v", handles)
-		} else if len(handles) > 1 {
-			debugf("ReadRequest len(handles) > 1; %v", handles)
-		}
-		file := d.file.(emptyFile)
-		handle := file.handle
-		debug("ReadRequest fuse_operations::getattr")
-		req = &GetattrRequest{
-			Header: makeHeaderWithDirective(d),
-			Handle: handle,
-			Flags:  GetattrFh,
-		}
-		err = nil
-		return
+
 	case *FindFilesDirective:
 		if d.compound == nil {
 			return nil, fmt.Errorf("FindFilesDirective has no compound")
 		}
-		req = d.compound.nextRequest()
+		req = d.compound.nextReq()
 		if req == nil {
 			debug(req)
 		}
@@ -1025,6 +1045,15 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 	var answer Answer
 
 	debugf("## WriteRespond\n > %v\n", resp)
+	rid := RequestID(resp.GetId())
+	id := retsm.getDirectiveId(rid)
+	directive := diesm.getDirective(DirectiveID(id))
+	directive.putResp(resp)
+	if !directive.isComplete() {
+		// No complete answer to post.
+		return nil
+	}
+	answer = directive.answer()
 
 	switch r := (resp).(type) {
 	case *ErrorResponse:
@@ -1035,40 +1064,14 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 		// TODO(OR): Complete directive
 		return r.Error
 	case *OpenResponse:
-		// fuse_operations::mknod	DOKAN_OPERATIONS::ZwCreateFile
-		// fuse_operations::create	DOKAN_OPERATIONS::ZwCreateFile
-		// fuse_operations::open	DOKAN_OPERATIONS::ZwCreateFile
-		// fuse_operations::mkdir	DOKAN_OPERATIONS::ZwCreateFile
-		// fuse_operations::opendir	DOKAN_OPERATIONS::ZwCreateFile
 
-		// OpenDirectIO    OpenResponseFlags = 1 << 0 // bypass page cache for this open file
-		// OpenKeepCache   OpenResponseFlags = 1 << 1 // don't invalidate the data cache on open
-		// OpenNonSeekable OpenResponseFlags = 1 << 2 // mark the file as non-seekable (not supported on FreeBSD)
-		// OpenCacheDir    OpenResponseFlags = 1 << 3 // allow caching directory contents
-		// Need to get the request to know if it's open or opendir?
-		id := r.GetId()
+		rid := RequestID(r.GetId())
+		id := retsm.getDirectiveId(rid)
 		directive := diesm.getDirective(DirectiveID(id))
-		d := directive.(*CreateFileDirective)
-		createStatus := dokan.ExistingFile
-		isDir := fileInfos.isDir(d.fileInfo)
-		if isDir {
-			debugf("WriteRespond fuse_operations::opendir")
-			createStatus = dokan.ExistingDir
-		} else {
-			debugf("WriteRespond fuse_operations::open")
-		}
-		file := makeFileWithHandle(r.Handle)
-
-		a := &CreateFileAnswer{
-			answerHeader: mkAnswerHeader(r),
-			File:         file,
-			CreateStatus: createStatus,
-		}
-		answer = a
-		// dokan.CreateStatus(dokan.ErrAccessDenied)
-
-		if r.Handle != 0 {
-			retsm.saveHandle(r.Handle, d.fileInfo.Path(), a.File)
+		directive.putResp(r)
+		if !directive.isComplete() {
+			// No complete answer to post.
+			return nil
 		}
 
 	case *GetattrResponse:
@@ -1161,6 +1164,7 @@ func (rrm *requestResponseModule) WriteRespond(fd *os.File, resp Response) error
 			// arg:= {directive: d}
 			// Products.perform(arg, p)
 			d.compound.putReadResponse(r)
+			// d.compound.putResponse(r)
 			if !d.compound.isComplete() {
 				// No complete answer to post.
 				return nil
@@ -1244,6 +1248,7 @@ type Response interface {
 	// RespondError(error)
 
 	String() string
+	isProcessArg()
 }
 
 type ErrorResponse struct {
@@ -1283,7 +1288,11 @@ type compound interface {
 type Directive interface {
 	principalDirectiveId() DirectiveID
 	putDirectiveId(id DirectiveID)
-	initProcessor()
+	startProcessor()
+	nextReq() Request
+	putResp(r Response)
+	isComplete() bool
+	answer() Answer
 	// Hdr returns the Header associated with this directive.
 	Hdr() *directiveHeader
 
@@ -1350,14 +1359,21 @@ type FileInfoModule struct{}
 
 var fileInfos = FileInfoModule{}
 
-func (m *FileInfoModule) isDir(fi *dokan.FileInfo) (isDir bool) {
-	path := fi.Path()
+func (m *FileInfoModule) isDir(path string) (isDir bool) {
 	isDir = len(path) != 0 && path[len(path)-1] == filepath.Separator
+	return
+}
+
+func (m *FileInfoModule) isDirWithFileInfo(fi *dokan.FileInfo) (isDir bool) {
+	path := fi.Path()
+	isDir = m.isDir(path)
 	return
 }
 
 type CreateFileDirective struct {
 	directiveHeader
+	errResp    *ErrorResponse
+	a          Answer
 	CreateData *dokan.CreateData
 }
 
@@ -1367,7 +1383,96 @@ func (d *CreateFileDirective) principalDirectiveId() DirectiveID {
 	return d.id
 }
 func (d *CreateFileDirective) putDirectiveId(id DirectiveID) { d.id = id }
-func (d *CreateFileDirective) initProcessor()                {}
+func (d *CreateFileDirective) startProcessor()               {}
+
+func (d *CreateFileDirective) nextReq() (req Request) {
+	// fuse_operations::mknod
+	// fuse_operations::create
+	// fuse_operations::mkdir
+	// fuse_operations::opendir
+	// fuse_operations::open
+	cd := d.CreateData
+	isDir := fileInfos.isDirWithFileInfo(d.Hdr().fileInfo)
+	if isDir {
+		if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+			debugf("ReadRequest fuse_operations::opendir")
+			req = &OpenRequest{
+				Header:    makeHeaderWithDirective(d),
+				Dir:       isDir,
+				Flags:     OpenDirectory,
+				OpenFlags: OpenRequestFlags(0),
+			}
+		} else if cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
+
+		}
+	} else {
+		if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+			// CreateData.DesiredAccess=100100000000010001001
+			// CreateData.FileAttributes=0
+			// CreateData.ShareAccess=111
+			// CreateData.CreateDisposition=1
+			// CreateData.CreateOptions=1100100
+			debugf("ReadRequest fuse_operations::open")
+			req = &OpenRequest{
+				Header:    makeHeaderWithDirective(d),
+				Dir:       isDir,
+				Flags:     OpenDirectory,
+				OpenFlags: OpenRequestFlags(0),
+			}
+		}
+	}
+	return
+}
+
+func (d *CreateFileDirective) putResp(resp Response) {
+	// fuse_operations::mknod	DOKAN_OPERATIONS::ZwCreateFile
+	// fuse_operations::create	DOKAN_OPERATIONS::ZwCreateFile
+	// fuse_operations::open	DOKAN_OPERATIONS::ZwCreateFile
+	// fuse_operations::mkdir	DOKAN_OPERATIONS::ZwCreateFile
+	// fuse_operations::opendir	DOKAN_OPERATIONS::ZwCreateFile
+
+	// OpenDirectIO    OpenResponseFlags = 1 << 0 // bypass page cache for this open file
+	// OpenKeepCache   OpenResponseFlags = 1 << 1 // don't invalidate the data cache on open
+	// OpenNonSeekable OpenResponseFlags = 1 << 2 // mark the file as non-seekable (not supported on FreeBSD)
+	// OpenCacheDir    OpenResponseFlags = 1 << 3 // allow caching directory contents
+
+	switch r := (resp).(type) {
+	case *ErrorResponse:
+		d.errResp = r
+	case *OpenResponse:
+		// Need to get the request to know if it's open or opendir?
+		// id := r.GetId()
+		// directive := diesm.getDirective(DirectiveID(id))
+		// d := directive.(*CreateFileDirective)
+		createStatus := dokan.ExistingFile
+		isDir := fileInfos.isDirWithFileInfo(d.fileInfo)
+		if isDir {
+			debugf("WriteRespond fuse_operations::opendir")
+			createStatus = dokan.ExistingDir
+		} else {
+			debugf("WriteRespond fuse_operations::open")
+		}
+		file := makeFileWithHandle(r.Handle)
+
+		// dokan.CreateStatus(dokan.ErrAccessDenied)
+		if r.Handle != 0 {
+			retsm.saveHandle(r.Handle, d.fileInfo.Path(), file)
+		}
+		d.a = &CreateFileAnswer{
+			answerHeader: mkAnswerHeader(r),
+			File:         file,
+			CreateStatus: createStatus,
+		}
+	}
+}
+
+func (d *CreateFileDirective) isComplete() bool {
+	return d.a != nil
+}
+
+func (d *CreateFileDirective) answer() Answer {
+	return d.a
+}
 
 func (d *CreateFileDirective) String() string {
 	return fmt.Sprintf(
@@ -1470,7 +1575,7 @@ func (d *CreateFileDirective) makeRequest() Request {
 		result = req
 	} else if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
 		// fuse_operations::open
-		isDir := fileInfos.isDir(d.Hdr().fileInfo)
+		isDir := fileInfos.isDirWithFileInfo(d.Hdr().fileInfo)
 		// r.FileInfo = req.FileInfo
 		// r.CreateData = req.CreateData
 		req := &OpenRequest{
@@ -1502,9 +1607,9 @@ type findFilesCompound struct {
 	processor *processor[*findFilesProcessData]
 }
 
-func (c *findFilesCompound) nextRequest() Request {
-	state := c.processor.fetch()
-	req := state.dequeueReq()
+func (c *findFilesCompound) nextReq() Request {
+	data := c.processor.fetch()
+	req := data.dequeueReq()
 	switch r := req.(type) {
 	case *ReadRequest:
 		// fuse_operations::readdir
@@ -1514,21 +1619,26 @@ func (c *findFilesCompound) nextRequest() Request {
 	return req
 }
 
-func (c *findFilesCompound) putRequest(req processArg) {
+func (c *findFilesCompound) putReq(req processArg) {
 	c.processor.step(req)
 }
 
+func (c *findFilesCompound) putResp(resp processArg) {
+	c.processor.step(resp)
+}
+
 func (c *findFilesCompound) getReadRequest() *ReadRequest {
-	state := c.processor.fetch()
-	return state.readRequest
+	data := c.processor.fetch()
+	return data.readRequest
 }
 
 func (c *findFilesCompound) putReadResponse(resp *ReadResponse) {
 	c.processor.step(resp)
 }
+
 func (c *findFilesCompound) getReadResponse() *ReadResponse {
-	state := c.processor.fetch()
-	return state.readResponse
+	data := c.processor.fetch()
+	return data.readResponse
 }
 
 func (c *findFilesCompound) putGetattrResponse(resp *GetattrResponse) {
@@ -1536,13 +1646,13 @@ func (c *findFilesCompound) putGetattrResponse(resp *GetattrResponse) {
 }
 
 func (c *findFilesCompound) getGetattrResponses() []*GetattrResponse {
-	state := c.processor.fetch()
-	return state.getattrResponses
+	data := c.processor.fetch()
+	return data.getattrResponses
 }
 
 func (c *findFilesCompound) getGetattrResponseByInode(inode uint64) *GetattrResponse {
-	state := c.processor.fetch()
-	for _, resp := range state.getattrResponses {
+	data := c.processor.fetch()
+	for _, resp := range data.getattrResponses {
 		if resp.Attr.Inode == inode {
 			return resp
 		}
@@ -1571,17 +1681,72 @@ var _ Directive = (*FindFilesDirective)(nil)
 func (d *FindFilesDirective) principalDirectiveId() DirectiveID {
 	return d.id
 }
+
 func (d *FindFilesDirective) putDirectiveId(id DirectiveID) {
 	d.id = id
 }
-func (d *FindFilesDirective) initProcessor() {
-	d.compound.processor.init(d)
+
+func (d *FindFilesDirective) startProcessor() {
+	d.compound.processor.start(d)
 }
+
+func (d *FindFilesDirective) nextReq() Request {
+	return d.compound.nextReq()
+}
+
+func (d *FindFilesDirective) putResp(r Response) {
+	d.compound.putResp(r)
+}
+
+func (d *FindFilesDirective) isComplete() bool {
+	return d.compound.isComplete()
+}
+
+func (d *FindFilesDirective) answer() Answer {
+	// p := FindFilesProduct{}
+	// arg:= {directive: d}
+	// Products.perform(arg, p)
+	if !d.compound.isComplete() {
+		// No complete answer to post.
+		return nil
+	}
+	readResp := d.compound.getReadResponse()
+	a := &FindFilesAnswer{
+		answerHeader: mkAnswerHeader(readResp),
+		Items:        make([]dokan.NamedStat, len(readResp.Entries)),
+	}
+	namedStat := dokan.NamedStat{
+		Name: "",
+		Stat: dokan.Stat{},
+	}
+	for _, it := range readResp.Entries {
+		attrResp := d.compound.getGetattrResponseByInode(it.Inode)
+		if attrResp == nil {
+			continue
+		}
+		namedStat.Name = it.Name
+		if it.Type&DT_File == DT_File {
+			namedStat.Stat.FileAttributes = dokan.FileAttributeNormal
+		} else if it.Type&DT_Dir == DT_Dir {
+			namedStat.Stat.FileAttributes = dokan.FileAttributeDirectory
+		}
+		namedStat.Stat.Creation = attrResp.Attr.Crtime
+		namedStat.Stat.LastAccess = attrResp.Attr.Atime
+		namedStat.Stat.LastWrite = attrResp.Attr.Mtime
+		namedStat.Stat.FileSize = int64(attrResp.Attr.Size)
+		namedStat.Stat.FileIndex = attrResp.Attr.Inode
+		namedStat.Stat.FileAttributes = mkFileAttributesWithAttr(attrResp.Attr)
+		a.Items = append(a.Items, namedStat)
+	}
+	return a
+}
+
 func (d *FindFilesDirective) RespondError(error) {}
 func (d *FindFilesDirective) String() string {
 	f := d.file.(emptyFile)
 	return fmt.Sprintf("FindFilesDirective [%s] file.handle=%v", d.Hdr(), f.handle)
 }
+
 func (d *FindFilesDirective) IsDirectiveType()      {}
 func (d *FindFilesDirective) getCompound() compound { return d.compound }
 func (d *FindFilesDirective) isProcessArg()         {}
@@ -1598,7 +1763,9 @@ func (r *FindFilesAnswer) IsAnswerType()      {}
 
 type GetFileInformationDirective struct {
 	directiveHeader
-	file dokan.File
+	errResp *ErrorResponse
+	a       Answer
+	file    dokan.File
 }
 
 var _ Directive = (*GetFileInformationDirective)(nil)
@@ -1607,8 +1774,70 @@ func (d *GetFileInformationDirective) principalDirectiveId() DirectiveID {
 	return d.id
 }
 func (r *GetFileInformationDirective) putDirectiveId(id DirectiveID) { r.id = id }
-func (d *GetFileInformationDirective) initProcessor()                {}
-func (r *GetFileInformationDirective) RespondError(error)            {}
+func (d *GetFileInformationDirective) startProcessor()               {}
+
+func (d *GetFileInformationDirective) nextReq() (req Request) {
+	handles := retsm.getHandleByPath(d.fileInfo.Path())
+	if len(handles) <= 0 {
+		debugf("ReadRequest len(handles) <= 0; %v", handles)
+	} else if len(handles) > 1 {
+		debugf("ReadRequest len(handles) > 1; %v", handles)
+	}
+	file := d.file.(emptyFile)
+	handle := file.handle
+	debug("ReadRequest fuse_operations::getattr")
+	req = &GetattrRequest{
+		Header: makeHeaderWithDirective(d),
+		Handle: handle,
+		Flags:  GetattrFh,
+	}
+	return
+}
+
+func (d *GetFileInformationDirective) putResp(resp Response) {
+	// fuse_operations::getattr 	DOKAN_OPERATIONS::GetFileInformation
+	// Valid time.Duration // how long Attr can be cached
+	// Inode     uint64      // inode number
+	// Size      uint64      // size in bytes
+	// Blocks    uint64      // size in 512-byte units
+	// Atime     time.Time   // time of last access
+	// Mtime     time.Time   // time of last modification
+	// Ctime     time.Time   // time of last inode change
+	// Crtime    time.Time   // time of creation (OS X only)
+	// Mode      os.FileMode // file mode
+	// Nlink     uint32      // number of links (usually 1)
+	// Uid       uint32      // owner uid
+	// Gid       uint32      // group gid
+	// Rdev      uint32      // device numbers
+	// Flags     uint32      // chflags(2) flags (OS X only)
+	// BlockSize uint32      // preferred blocksize for filesystem I/O
+	switch r := (resp).(type) {
+	case *ErrorResponse:
+		d.errResp = r
+	case *GetattrResponse:
+		d.a = &GetFileInformationAnswer{
+			answerHeader: mkAnswerHeader(r),
+			Stat: &dokan.Stat{
+				Creation:       r.Attr.Crtime,
+				LastAccess:     r.Attr.Atime,
+				LastWrite:      r.Attr.Mtime,
+				FileSize:       int64(r.Attr.Size),
+				FileIndex:      r.Attr.Inode,
+				FileAttributes: mkFileAttributesWithAttr(r.Attr),
+			},
+		}
+	}
+}
+
+func (d *GetFileInformationDirective) isComplete() bool {
+	return d.a != nil
+}
+
+func (d *GetFileInformationDirective) answer() Answer {
+	return d.a
+}
+
+func (r *GetFileInformationDirective) RespondError(error) {}
 func (r *GetFileInformationDirective) String() string {
 	f := r.file.(emptyFile)
 	return fmt.Sprintf("GetFileInformationDirective [%s] file.handle=%s", r.Hdr(), f.handle)
