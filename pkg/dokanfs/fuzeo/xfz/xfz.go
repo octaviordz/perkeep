@@ -626,7 +626,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			data = &findFilesProcessData{
 				processState: processStatePending,
 				directive:    d,
-				reqR:         ring.New(1),
+				reqR:         newRingBuffer(),
 			}
 			// Enqueue and set ReadRequest
 			cmd = batchCmd([]Cmd{
@@ -693,7 +693,6 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		v := data.peekReq()
 		isInit := data.readRequest == nil || v == data.readRequest
 		fxj := func(dispatch Dispatch) {
-			dispatch(CmdNone)
 			if isInit {
 				// Must not publish when init.
 				// Initial request read by ReadRequest.
@@ -854,8 +853,8 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return _data.processState
 	}
 
-	update_ := func(an any, data *findFilesProcessData) (*findFilesProcessData, Cmd) {
-		n := an.(note)
+	update_ := func(anote any, data *findFilesProcessData) (*findFilesProcessData, Cmd) {
+		n := anote.(note)
 		updated, cmd := update(n, *data)
 		return &updated, cmd
 	}
