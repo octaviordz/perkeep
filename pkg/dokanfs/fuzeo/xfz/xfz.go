@@ -407,20 +407,39 @@ type processor[Tdata any] struct {
 }
 
 type ringBuffer struct {
+	h *ring.Ring
 	r *ring.Ring
 }
 
-func (x *ringBuffer) push(v any) {
-	rl := ring.New(1)
-	rl.Value = v
-	x.r.Link(rl)
+func newRingBuffer() *ringBuffer {
+	r := ring.New(1)
+	return &ringBuffer{
+		h: r,
+		r: r,
+	}
 }
 
-func (x ringBuffer) pop() any {
-	if x.r.Len() > 1 {
+func (x *ringBuffer) push(v any) {
+	x.r.Value = v
+	s := ring.New(1)
+	x.r.Link(s)
+	x.r = s
+}
+
+func (x *ringBuffer) pop() any {
+	if x.h != x.r {
 		rl := x.r.Unlink(1)
 		debugf("ring buffer length %d", rl.Len())
+		x.h = x.r.Next()
 		return rl.Value
+	}
+	return nil
+}
+
+func (x *ringBuffer) peek() any {
+	if x.h != x.r {
+		v := x.h.Value
+		return v
 	}
 	return nil
 }
@@ -430,7 +449,7 @@ func (p *processor[Tdata]) start(arg processArg) {
 		dispatch    func(note any)
 		processNote func()
 	)
-	rb := &ringBuffer{r: &ring.Ring{}}
+	rb := newRingBuffer()
 	data, cmd := p.process.init(arg)
 	sub := p.process.subscribe(data)
 	reentered := false
@@ -442,8 +461,6 @@ func (p *processor[Tdata]) start(arg processArg) {
 			reentered = true
 			processNote()
 			reentered = false
-		} else {
-			debug(reentered)
 		}
 	}
 	processNote = func() {
@@ -504,26 +521,30 @@ type findFilesProcessData struct {
 	openResponses    []*OpenResponse
 	getattrRequests  []*GetattrRequest
 	getattrResponses []*GetattrResponse
-	reqR             *ring.Ring
+	reqR             *ringBuffer
 }
 
 func (x *findFilesProcessData) enqueueReq(req Request) {
-	rl := ring.New(1)
-	rl.Value = req
-	x.reqR.Link(rl)
+	x.reqR.push(req)
 }
 
 func (x *findFilesProcessData) dequeueReq() Request {
-	if x.reqR.Len() > 1 {
-		rl := x.reqR.Unlink(1)
-		v := rl.Value
-		if v == nil {
-			debug(v)
-		}
-		switch req := v.(type) {
-		case Request:
-			return req
-		}
+	v := x.reqR.pop()
+	if v == nil {
+		debug(v)
+	}
+	switch req := v.(type) {
+	case Request:
+		return req
+	}
+	return nil
+}
+
+func (x *findFilesProcessData) peekReq() Request {
+	v := x.reqR.peek()
+	switch req := v.(type) {
+	case Request:
+		return req
 	}
 	return nil
 }
@@ -609,11 +630,11 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			}
 			// Enqueue and set ReadRequest
 			cmd = batchCmd([]Cmd{
-				cmdOfNote(note{kind: nkEnqueueReq,
-					enqueueReq: &enqueueReq{req: readRequest},
-				}),
 				cmdOfNote(note{kind: readdirReq,
 					readdir: &readdir{req: readRequest},
+				}),
+				cmdOfNote(note{kind: nkEnqueueReq,
+					enqueueReq: &enqueueReq{req: readRequest},
 				}),
 			})
 		}
@@ -668,6 +689,21 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return
 	}
 
+	reqReadyCmd := func(data *findFilesProcessData) Cmd {
+		v := data.peekReq()
+		isInit := data.readRequest == nil || v == data.readRequest
+		fxj := func(dispatch Dispatch) {
+			dispatch(CmdNone)
+			if isInit {
+				// Must not publish when init.
+				// Initial request read by ReadRequest.
+				return
+			}
+			diesm.publishDirective(ctx, data.directive)
+		}
+		return []Effect{fxj}
+	}
+
 	openReqCmd := func(data *findFilesProcessData) Cmd {
 		d := data.directive
 		idx := len(data.openRequests)
@@ -686,11 +722,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				enqueueReq: &enqueueReq{req: openReq},
 			})
 		}
-		fxj := func(dispatch Dispatch) {
-			dispatch(CmdNone)
-			diesm.publishDirective(ctx, d)
-		}
-		return batchCmd([]Cmd{[]Effect{fxi}, []Effect{fxj}})
+		return Cmd{fxi}
 	}
 
 	getattrReqCmd := func(data *findFilesProcessData) Cmd {
@@ -712,11 +744,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				enqueueReq: &enqueueReq{req: req},
 			})
 		}
-		fxj := func(dispatch Dispatch) {
-			dispatch(CmdNone)
-			diesm.publishDirective(ctx, d)
-		}
-		return batchCmd([]Cmd{[]Effect{fxi}, []Effect{fxj}})
+		return Cmd{fxi}
 	}
 
 	update := func(note note, data findFilesProcessData) (updated findFilesProcessData, cmd Cmd) {
@@ -726,6 +754,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		case nkEnqueueReq:
 			fmt.Printf("findFilesProcess enqueueReq: %v\n", note.enqueueReq.req)
 			updated.enqueueReq(note.enqueueReq.req)
+			cmd = reqReadyCmd(&updated)
 		case readdirReq:
 			fmt.Printf("findFilesProcess readdir (req): %v\n", note.readdir.req)
 			updated.readRequest = note.readdir.req
