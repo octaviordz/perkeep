@@ -89,13 +89,11 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 
 	//TODO(ORC): Process response.
 	answer, err := diesm.PostDirective(ctx, directive)
-	debug(answer)
-
-	a := answer.(*CreateFileAnswer)
-
 	if err != nil {
+		debug(answer)
 		return nil, dokan.CreateStatus(dokan.ErrNotSupported), err
 	}
+	a := answer.(*CreateFileAnswer)
 
 	if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
 		cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
