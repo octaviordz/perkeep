@@ -513,12 +513,12 @@ const (
 )
 
 type findFilesProcessData struct {
-	processState     processState
-	directive        *FindFilesDirective
-	readRequest      *ReadRequest
-	readResponse     *ReadResponse
-	openRequests     []*OpenRequest
-	openResponses    []*OpenResponse
+	processState processState
+	directive    *FindFilesDirective
+	readRequest  *ReadRequest
+	readResponse *ReadResponse
+	// openRequests     []*OpenRequest
+	// openResponses    []*OpenResponse
 	getattrRequests  []*GetattrRequest
 	getattrResponses []*GetattrResponse
 	reqR             *ringBuffer
@@ -703,41 +703,55 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return []Effect{fxj}
 	}
 
-	openReqCmd := func(data *findFilesProcessData) Cmd {
-		d := data.directive
-		idx := len(data.openRequests)
-		dirent := data.readResponse.Entries[idx]
-		fxi := func(dispatch Dispatch) {
-			fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
-			isDir := fileInfos.isDir(fPath)
-			node := supplyNodeIdWithPath(fPath)
-			openReq := &OpenRequest{
-				Header:    makeHeaderWith(node, d),
-				Dir:       isDir,
-				Flags:     OpenDirectory,
-				OpenFlags: OpenRequestFlags(0),
-			}
-			dispatch(note{kind: nkEnqueueReq,
-				enqueueReq: &enqueueReq{req: openReq},
-			})
-		}
-		return Cmd{fxi}
-	}
+	// openReqCmd := func(data *findFilesProcessData) Cmd {
+	// 	d := data.directive
+	// 	idx := len(data.openRequests)
+	// 	dirent := data.readResponse.Entries[idx]
+	// 	fxi := func(dispatch Dispatch) {
+	// 		fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
+	// 		isDir := fileInfos.isDir(fPath)
+	// 		node := supplyNodeIdWithPath(fPath)
+	// 		openReq := &OpenRequest{
+	// 			Header:    makeHeaderWith(node, d),
+	// 			Dir:       isDir,
+	// 			Flags:     OpenReadOnly,
+	// 			OpenFlags: OpenRequestFlags(0),
+	// 		}
+	// 		dispatch(note{kind: nkEnqueueReq,
+	// 			enqueueReq: &enqueueReq{req: openReq},
+	// 		})
+	// 	}
+	// 	return Cmd{fxi}
+	// }
 
 	getattrReqCmd := func(data *findFilesProcessData) Cmd {
 		d := data.directive
 		idx := len(data.getattrRequests)
-		openResp := data.openResponses[idx]
+		dirent := data.readResponse.Entries[idx]
+		fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
+		// isDir := fileInfos.isDir(fPath)
+		node := supplyNodeIdWithPath(fPath)
+		rid := retsm.requestId()
+		pid := data.directive.principalDirectiveId()
+		retsm.saveRequestId(rid, pid)
+		h := Header{
+			ID:   RequestID(rid),
+			Node: node,
+			// Uid:  uint32(h.ID),
+			// Gid:  h.Gid,
+			// Pid:  h.Pid,
+		}
 		fxi := func(dispatch Dispatch) {
-			handle := openResp.Handle
-			flags := GetattrFh
-			if handle == 0 {
-				flags = 0
-			}
+			// handle := openResp.Handle
+			flags := GetattrFlags(0)
+			// if handle == 0 {
+			// 	flags = 0
+			// }
 			req := &GetattrRequest{
-				Header: makeHeaderWithDirective(d),
-				Handle: handle,
-				Flags:  flags,
+				Header: h,
+				//Header: makeHeaderWithDirective(d),
+				// Handle: handle,
+				Flags: flags,
 			}
 			dispatch(note{kind: nkEnqueueReq,
 				enqueueReq: &enqueueReq{req: req},
@@ -748,7 +762,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 
 	update := func(note note, data findFilesProcessData) (updated findFilesProcessData, cmd Cmd) {
 		updated = data
-		cmd = nil
+		cmd = CmdNone
 		switch note.kind {
 		case nkEnqueueReq:
 			fmt.Printf("findFilesProcess enqueueReq: %v\n", note.enqueueReq.req)
@@ -760,50 +774,28 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		case readdirResp:
 			fmt.Printf("findFilesProcess readdir (resp): %v\n", note.readdir.resp)
 			updated.readResponse = note.readdir.resp
-			cmd = openReqCmd(&updated)
-		case openReq:
-			fmt.Printf("findFilesProcess open (req): %v\n", note.open.req)
-			updated.openRequests = append(updated.openRequests, note.open.req)
-		case openResp:
-			fmt.Printf("findFilesProcess open (resp): %v\n", note.open.resp)
-			updated.openResponses = append(updated.openResponses, note.open.resp)
-			if len(data.openResponses) == len(data.readResponse.Entries) {
-				cmd = getattrReqCmd(&updated)
-			} else {
-				cmd = batchCmd([]Cmd{
-					openReqCmd(&data), getattrReqCmd(&updated)})
-				debugf("cmd %v", cmd)
-			}
+			// cmd = openReqCmd(&updated)
+		// case openReq:
+		// 	fmt.Printf("findFilesProcess open (req): %v\n", note.open.req)
+		// 	updated.openRequests = append(updated.openRequests, note.open.req)
+		// case openResp:
+		// 	fmt.Printf("findFilesProcess open (resp): %v\n", note.open.resp)
+		// 	updated.openResponses = append(updated.openResponses, note.open.resp)
+		// 	if len(data.openResponses) == len(data.readResponse.Entries) {
+		// 		cmd = getattrReqCmd(&updated)
+		// 	} else {
+		// 		cmd = batchCmd([]Cmd{
+		// 			openReqCmd(&data), getattrReqCmd(&updated)})
+		// 	}
 		case getattrReq:
 			fmt.Printf("findFilesProcess getattr (req): %v\n", note.getattr.req)
 			updated.getattrRequests = append(updated.getattrRequests, note.getattr.req)
 		case getattrResp:
-			// var (
-			// 	req  *OpenRequest
-			// 	resp *OpenResponse
-			// )
 			fmt.Printf("findFilesProcess getattr (resp): %v\n", note.getattr.resp)
 			updated.getattrResponses = append(updated.getattrResponses, note.getattr.resp)
 			if len(data.getattrResponses) == len(data.readResponse.Entries) {
 				updated.processState = processStateSettled
 			} else {
-				// idx := len(data.getattrResponses) + 1
-				// dirent := updated.readResponse.Entries[idx]
-				// fPath := filepath.Join(data.directive.fileInfo.Path(), dirent.Name)
-				// node := supplyNodeIdWithPath(fPath)
-				// for _, openReq := range data.openRequests {
-				// 	if openReq.Node == node {
-				// 		req = openReq
-				// 	}
-				// }
-				// for _, openResp := range data.openResponses {
-				// 	if openResp.Id == req.ID {
-				// 		resp = openResp
-				// 	}
-				// }
-				// if resp == nil {
-				// 	debug(resp)
-				// }
 				cmd = getattrReqCmd(&data)
 			}
 		}
