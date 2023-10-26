@@ -1242,7 +1242,7 @@ func (c *Server) handleRequest(ctx context.Context, node Node, snode *serveNode,
 	case *fuzeo.OpenRequest:
 		s := &fuzeo.OpenResponse{}
 		var h2 Handle
-		if r.Header.Node == fuzeo.NodeID(2) {
+		if r.Header.Node != fuzeo.NodeID(1) {
 			fmt.Println(r.Header.Node)
 		}
 		if n, ok := node.(NodeOpener); ok {
