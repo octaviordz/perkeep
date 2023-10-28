@@ -502,14 +502,19 @@ func (p *processor[Tdata]) state() processState {
 type findFilesNoteKind = int
 
 const (
-	findFilesNoteKindReaddirReq  = findFilesNoteKind(0b00010001)
-	findFilesNoteKindReaddirResp = findFilesNoteKind(0b00010010)
-	findFilesNoteKindOpenReq     = findFilesNoteKind(0b00100001)
-	findFilesNoteKindOpenResp    = findFilesNoteKind(0b00100010)
-	findFilesNoteKindGetattrReq  = findFilesNoteKind(0b00110001)
-	findFilesNoteKindGetattrResp = findFilesNoteKind(0b00110010)
-	findFilesNoteKindPush        = findFilesNoteKind(0b10001000)
-	findFilesNoteKindEnqueuReq   = findFilesNoteKind(0b10001111)
+	findFilesNoteKindRespBitMask = findFilesNoteKind(0b0001_00000000)
+	findFilesNoteKindAccessReq   = findFilesNoteKind(opAccess)
+	findFilesNoteKindAccessResp  = findFilesNoteKind(findFilesNoteKindRespBitMask | opAccess)
+	findFilesNoteKindLookupReq   = findFilesNoteKind(opLookup)
+	findFilesNoteKindLookupResp  = findFilesNoteKind(findFilesNoteKindRespBitMask | opLookup)
+	findFilesNoteKindReaddirReq  = findFilesNoteKind(opReaddir)
+	findFilesNoteKindReaddirResp = findFilesNoteKind(findFilesNoteKindRespBitMask | opReaddir)
+	findFilesNoteKindOpenReq     = findFilesNoteKind(opOpen) // opOpendir
+	findFilesNoteKindOpenResp    = findFilesNoteKind(findFilesNoteKindRespBitMask | opOpen)
+	findFilesNoteKindGetattrReq  = findFilesNoteKind(opGetattr)
+	findFilesNoteKindGetattrResp = findFilesNoteKind(findFilesNoteKindRespBitMask | opGetattr)
+	findFilesNoteKindPush        = findFilesNoteKind(0b1000_1000_0000)
+	findFilesNoteKindEnqueuReq   = findFilesNoteKind(0b1000_1111_0000)
 )
 
 type findFilesProcessData struct {
@@ -577,6 +582,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 	}
 
 	const (
+		accessReq    = findFilesNoteKindAccessReq
 		readdirReq   = findFilesNoteKindReaddirReq
 		readdirResp  = findFilesNoteKindReaddirResp
 		openReq      = findFilesNoteKindOpenReq
@@ -1146,6 +1152,8 @@ func (d *CreateFileDirective) nextReq() (req Request) {
 		}
 	} else {
 		if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+			// https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/access-mask
+			// https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/access-mask?redirectedfrom=MSDN
 			// CreateData.DesiredAccess=100100000000010001001
 			// CreateData.FileAttributes=0
 			// CreateData.ShareAccess=111

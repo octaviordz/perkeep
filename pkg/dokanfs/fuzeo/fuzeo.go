@@ -108,6 +108,8 @@ var (
 const maxWrite = 128 * 1024
 
 func initMount(c *Conn, conf *mountConfig) error {
+	proto := Protocol{protoVersionMaxMajor, protoVersionMaxMinor}
+	c.proto = proto
 	return nil
 }
 
