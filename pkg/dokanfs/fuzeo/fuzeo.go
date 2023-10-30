@@ -643,8 +643,10 @@ func (r *AccessRequest) String() string {
 // Respond replies to the request indicating that access is allowed.
 // To deny access, use RespondError.
 func (r *AccessRequest) Respond() {
-	buf := newBuffer(0)
-	r.respond(buf)
+	// buf := newBuffer(0)
+	// r.respond(buf)
+	var outResp xfz.Response = &xfz.AccessResponse{}
+	r.respondi(outResp)
 }
 
 // An Attr is the metadata for a single file or directory.
@@ -1156,8 +1158,10 @@ func (r *ReleaseRequest) String() string {
 
 // Respond replies to the request, indicating that the handle has been released.
 func (r *ReleaseRequest) Respond() {
-	buf := newBuffer(0)
-	r.respond(buf)
+	// buf := newBuffer(0)
+	// r.respond(buf)
+	var outResp xfz.Response = &xfz.ReleaseResponse{}
+	r.respondi(outResp)
 }
 
 // A DestroyRequest is sent by the kernel when unmounting the file system.

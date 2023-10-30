@@ -1589,6 +1589,21 @@ func (r *AccessRequest) Respond() {
 	// r.respond(buf)
 }
 
+type AccessResponse struct {
+	ResponseHeader
+}
+
+var _ Response = (*AccessResponse)(nil)
+
+func (r *AccessResponse) String() string {
+	return fmt.Sprintf("Access [%s]", &r.ResponseHeader)
+}
+
+func (r *AccessResponse) IsResponseType() {}
+func (r *AccessResponse) PutId(id uint64) { r.Id = RequestID(id) }
+func (r *AccessResponse) GetId() uint64   { return uint64(r.Id) }
+func (d *AccessResponse) IsProcessArg()   {}
+
 // An Attr is the metadata for a single file or directory.
 type Attr struct {
 	Valid time.Duration // how long Attr can be cached
@@ -1675,7 +1690,7 @@ var _ = Request(&GetattrRequest{})
 func (r *GetattrRequest) String() string {
 	return fmt.Sprintf("Getattr [%s] %v fl=%v", &r.Header, r.Handle, r.Flags)
 }
-func (d *GetattrRequest) isProcessArg() {}
+func (d *GetattrRequest) IsProcessArg() {}
 
 // Respond replies to the request with the given response.
 func (r *GetattrRequest) Respond(resp *GetattrResponse) {
@@ -1701,7 +1716,7 @@ func (r *GetattrResponse) String() string {
 func (r *GetattrResponse) IsResponseType() {}
 func (r *GetattrResponse) PutId(id uint64) { r.Id = RequestID(id) }
 func (r *GetattrResponse) GetId() uint64   { return uint64(r.Id) }
-func (d *GetattrResponse) isProcessArg()   {}
+func (d *GetattrResponse) IsProcessArg()   {}
 
 func mkFileAttributesWithAttr(attr Attr) dokan.FileAttribute {
 	// FileAttributeReadonly = FileAttribute(0x00000001)FileAttributeReadonly
@@ -1931,7 +1946,7 @@ var _ = Request(&OpenRequest{})
 func (r *OpenRequest) String() string {
 	return fmt.Sprintf("Open [%s] dir=%v fl=%v", &r.Header, r.Dir, r.Flags)
 }
-func (d *OpenRequest) isProcessArg() {}
+func (d *OpenRequest) IsProcessArg() {}
 
 // A OpenResponse is the response to a OpenRequest.
 type OpenResponse struct {
@@ -1951,7 +1966,7 @@ func (r *OpenResponse) String() string {
 func (r *OpenResponse) IsResponseType() {}
 func (r *OpenResponse) PutId(id uint64) { r.Id = RequestID(id) }
 func (r *OpenResponse) GetId() uint64   { return uint64(r.Id) }
-func (d *OpenResponse) isProcessArg()   {}
+func (d *OpenResponse) IsProcessArg()   {}
 
 // A CreateRequest asks to create and open a file (not a directory).
 type CreateRequest struct {
@@ -2022,7 +2037,7 @@ func (r *ReadRequest) String() string {
 	return fmt.Sprintf("Read [%s] %v %d @%#x dir=%v fl=%v lock=%d ffl=%v", &r.Header, r.Handle, r.Size, r.Offset, r.Dir, r.Flags, r.LockOwner, r.FileFlags)
 }
 
-func (d *ReadRequest) isProcessArg() {}
+func (d *ReadRequest) IsProcessArg() {}
 
 // A ReadResponse is the response to a ReadRequest.
 type ReadResponse struct {
@@ -2042,7 +2057,7 @@ func (r *ReadResponse) String() string {
 func (r *ReadResponse) IsResponseType() {}
 func (r *ReadResponse) PutId(id uint64) { r.Id = RequestID(id) }
 func (r *ReadResponse) GetId() uint64   { return uint64(r.Id) }
-func (d *ReadResponse) isProcessArg()   {}
+func (d *ReadResponse) IsProcessArg()   {}
 
 type jsonReadResponse struct {
 	Len uint64
@@ -2076,6 +2091,21 @@ func (r *ReleaseRequest) Respond() {
 	// buf := newBuffer(0)
 	// r.respond(buf)
 }
+
+type ReleaseResponse struct {
+	ResponseHeader
+}
+
+var _ Response = (*ReleaseResponse)(nil)
+
+func (r *ReleaseResponse) String() string {
+	return fmt.Sprintf("Access [%s]", &r.ResponseHeader)
+}
+
+func (r *ReleaseResponse) IsResponseType() {}
+func (r *ReleaseResponse) PutId(id uint64) { r.Id = RequestID(id) }
+func (r *ReleaseResponse) GetId() uint64   { return uint64(r.Id) }
+func (d *ReleaseResponse) IsProcessArg()   {}
 
 // A DestroyRequest is sent by the kernel when unmounting the file system.
 // No more requests will be received after this one, but it should still be

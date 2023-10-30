@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/keybase/client/go/kbfs/dokan"
+
+	// "perkeep.org/pkg/dokanfs/fuzeo/psor"
+	"perkeep.org/pkg/dokanfs/fuzeo/psor"
+
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/keybase/client/go/kbfs/dokan"
 )
 
 type mountHandleEntry struct {
@@ -513,20 +517,28 @@ const (
 	findFilesNoteKindOpenResp    = findFilesNoteKind(findFilesNoteKindRespBitMask | opOpen)
 	findFilesNoteKindGetattrReq  = findFilesNoteKind(opGetattr)
 	findFilesNoteKindGetattrResp = findFilesNoteKind(findFilesNoteKindRespBitMask | opGetattr)
+	findFilesNoteKindReleaseReq  = findFilesNoteKind(opRelease)
+	findFilesNoteKindReleaseResp = findFilesNoteKind(findFilesNoteKindRespBitMask | opRelease)
 	findFilesNoteKindPush        = findFilesNoteKind(0b1000_1000_0000)
 	findFilesNoteKindEnqueuReq   = findFilesNoteKind(0b1000_1111_0000)
 )
 
 type findFilesProcessData struct {
-	processState     processState
-	directive        *FindFilesDirective
-	readRequest      *ReadRequest
-	readResponse     *ReadResponse
-	openRequests     []*OpenRequest
-	openResponses    []*OpenResponse
-	getattrRequests  []*GetattrRequest
-	getattrResponses []*GetattrResponse
-	reqR             *ringBuffer
+	processState    processState
+	directive       *FindFilesDirective
+	accessRequest   *AccessRequest
+	accessResponse  *AccessResponse
+	openRequest     *OpenRequest
+	openResponse    *OpenResponse
+	getattrRequest  *GetattrRequest
+	getattrResponse *GetattrResponse
+	readRequest     *ReadRequest
+	readResponse    *ReadResponse
+	lookupRequests  []*LookupRequest
+	lookupResponses []*LookupResponse
+	releaseRequest  *ReleaseRequest
+	releaseResponse *ReleaseResponse
+	reqR            *ringBuffer
 }
 
 func (x *findFilesProcessData) enqueueReq(req Request) {
@@ -566,38 +578,63 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		req Request
 	}
 
+	type access struct {
+		req  *AccessRequest
+		resp *AccessResponse
+	}
+
 	type readdir struct {
 		req  *ReadRequest
 		resp *ReadResponse
 	}
 
 	type open struct {
-		req  *OpenRequest
-		resp *OpenResponse
+		isDirent bool
+		req      *OpenRequest
+		resp     *OpenResponse
 	}
 
 	type getattr struct {
-		req  *GetattrRequest
-		resp *GetattrResponse
+		isDirent bool
+		req      *GetattrRequest
+		resp     *GetattrResponse
+	}
+
+	type lookup struct {
+		req  *LookupRequest
+		resp *LookupResponse
+	}
+
+	type release struct {
+		req  *ReleaseRequest
+		resp *ReleaseResponse
 	}
 
 	const (
 		accessReq    = findFilesNoteKindAccessReq
+		accessResp   = findFilesNoteKindAccessResp
 		readdirReq   = findFilesNoteKindReaddirReq
 		readdirResp  = findFilesNoteKindReaddirResp
 		openReq      = findFilesNoteKindOpenReq
 		openResp     = findFilesNoteKindOpenResp
 		getattrReq   = findFilesNoteKindGetattrReq
 		getattrResp  = findFilesNoteKindGetattrResp
+		lookupReq    = findFilesNoteKindLookupReq
+		lookupResp   = findFilesNoteKindLookupResp
+		releaseReq   = findFilesNoteKindReleaseReq
+		releaseResp  = findFilesNoteKindReleaseResp
 		nkEnqueueReq = findFilesNoteKindEnqueuReq
 	)
 
 	type note struct {
 		kind       findFilesNoteKind
 		enqueueReq *enqueueReq
-		readdir    *readdir
-		open       *open
+		access     *access
 		getattr    *getattr
+		open       *open
+		readdir    *readdir
+		lookup     *lookup
+		release    *release
 	}
 
 	cmdOfNote := func(n note) Cmd {
@@ -615,39 +652,32 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return result
 	}
 
-	init := func(arg processArg) (data *findFilesProcessData, cmd Cmd) {
+	init := func(arg psor.ProcessArg) (data *findFilesProcessData, cmd Cmd) {
 		switch d := arg.(type) {
 		case *FindFilesDirective:
-			file := d.file.(emptyFile)
-			handle := file.handle
-			readRequest := &ReadRequest{
-				Header:    makeHeaderWithDirective(d),
-				Dir:       true,
-				Handle:    handle,
-				Offset:    0,
-				Size:      maxRead,
-				Flags:     0,
-				FileFlags: OpenReadOnly,
+			accessRequest := &AccessRequest{
+				Header: makeHeaderWithDirective(d),
+				Mask:   0x1,
 			}
 			data = &findFilesProcessData{
 				processState: processStatePending,
 				directive:    d,
 				reqR:         newRingBuffer(),
 			}
-			// Enqueue and set ReadRequest
+			// Set and enqueue request.
 			cmd = batchCmd([]Cmd{
-				cmdOfNote(note{kind: readdirReq,
-					readdir: &readdir{req: readRequest},
+				cmdOfNote(note{kind: accessReq,
+					access: &access{req: accessRequest},
 				}),
 				cmdOfNote(note{kind: nkEnqueueReq,
-					enqueueReq: &enqueueReq{req: readRequest},
+					enqueueReq: &enqueueReq{req: accessRequest},
 				}),
 			})
 		}
 		return
 	}
 
-	noteWith := func(arg processArg) (r note) {
+	noteWith := func(arg psor.ProcessArg) (r note) {
 		switch arg := arg.(type) {
 		case *ReadRequest:
 			r = note{
@@ -709,47 +739,108 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return []Effect{fxj}
 	}
 
-	openReqCmd := func(data *findFilesProcessData) Cmd {
+	readdirReqCmd := func(data *findFilesProcessData) Cmd {
 		d := data.directive
-		idx := len(data.openRequests)
-		dirent := data.readResponse.Entries[idx]
 		fxi := func(dispatch Dispatch) {
-			fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
-			isDir := fileInfos.isDir(fPath)
-			node := supplyNodeIdWithPath(fPath)
-			openReq := &OpenRequest{
-				Header:    makeHeaderWith(node, d),
-				Dir:       isDir,
-				Flags:     OpenDirectory,
-				OpenFlags: OpenRequestFlags(0),
+			handle := data.openResponse.Handle
+			readRequest := &ReadRequest{
+				Header:    makeHeaderWithDirective(d),
+				Dir:       true,
+				Handle:    handle,
+				Offset:    0,
+				Size:      maxRead,
+				Flags:     0,
+				FileFlags: OpenReadOnly,
 			}
 			dispatch(note{kind: nkEnqueueReq,
-				enqueueReq: &enqueueReq{req: openReq},
+				enqueueReq: &enqueueReq{req: readRequest},
 			})
 		}
 		return Cmd{fxi}
 	}
 
+	openReqCmd := func(data *findFilesProcessData) Cmd {
+		d := data.directive
+		fPath := d.fileInfo.Path()
+		isDir := fileInfos.isDir(fPath)
+		node := supplyNodeIdWithPath(fPath)
+		req := &OpenRequest{
+			Header:    makeHeaderWith(node, d),
+			Dir:       isDir,
+			Flags:     OpenDirectory,
+			OpenFlags: OpenRequestFlags(0),
+		}
+		// Set and enqueue request
+		return batchCmd([]Cmd{
+			cmdOfNote(note{kind: openReq,
+				open: &open{req: req},
+			}),
+			cmdOfNote(note{kind: nkEnqueueReq,
+				enqueueReq: &enqueueReq{req: req},
+			}),
+		})
+	}
+
 	getattrReqCmd := func(data *findFilesProcessData) Cmd {
 		d := data.directive
-		idx := len(data.getattrRequests)
-		openResp := data.openResponses[idx]
-		fxi := func(dispatch Dispatch) {
-			handle := openResp.Handle
-			flags := GetattrFh
-			if handle == 0 {
-				flags = 0
-			}
-			req := &GetattrRequest{
-				Header: makeHeaderWithDirective(d),
-				Handle: handle,
-				Flags:  flags,
-			}
-			dispatch(note{kind: nkEnqueueReq,
-				enqueueReq: &enqueueReq{req: req},
-			})
+		fPath := d.fileInfo.Path()
+		node := supplyNodeIdWithPath(fPath)
+		req := &GetattrRequest{
+			Header: makeHeaderWith(node, d),
+			Handle: HandleID(0),
+			Flags:  0,
 		}
-		return Cmd{fxi}
+		// Set and enqueue request
+		return batchCmd([]Cmd{
+			cmdOfNote(note{kind: getattrReq,
+				getattr: &getattr{req: req},
+			}),
+			cmdOfNote(note{kind: nkEnqueueReq,
+				enqueueReq: &enqueueReq{req: req},
+			}),
+		})
+	}
+
+	lookupReqCmd := func(data *findFilesProcessData) Cmd {
+		d := data.directive
+		idx := len(data.lookupRequests)
+		dirent := data.readResponse.Entries[idx]
+		fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
+		node := supplyNodeIdWithPath(fPath)
+		req := &LookupRequest{
+			Header: makeHeaderWith(node, d),
+			Name:   dirent.Name,
+		}
+		// Set and enqueue request
+		return batchCmd([]Cmd{
+			cmdOfNote(note{kind: lookupReq,
+				lookup: &lookup{req: req},
+			}),
+			cmdOfNote(note{kind: nkEnqueueReq,
+				enqueueReq: &enqueueReq{req: req},
+			}),
+		})
+	}
+
+	releaseReqCmd := func(data *findFilesProcessData) Cmd {
+		d := data.directive
+		openReq := data.openRequest
+		handle := data.openResponse.Handle
+		req := &ReleaseRequest{
+			Header: makeHeaderWithDirective(d),
+			Dir:    openReq.Dir,
+			Handle: handle,
+			Flags:  openReq.Flags,
+		}
+		// Set and enqueue request
+		return batchCmd([]Cmd{
+			cmdOfNote(note{kind: releaseReq,
+				release: &release{req: req},
+			}),
+			cmdOfNote(note{kind: nkEnqueueReq,
+				enqueueReq: &enqueueReq{req: req},
+			}),
+		})
 	}
 
 	update := func(note note, data findFilesProcessData) (updated findFilesProcessData, cmd Cmd) {
@@ -760,58 +851,52 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			fmt.Printf("findFilesProcess enqueueReq: %v\n", note.enqueueReq.req)
 			updated.enqueueReq(note.enqueueReq.req)
 			cmd = reqReadyCmd(&updated)
+		case accessReq:
+			fmt.Printf("findFilesProcess access (req): %v\n", note.access.req)
+			updated.accessRequest = note.access.req
+		case accessResp:
+			fmt.Printf("findFilesProcess access (req): %v\n", note.access.req)
+			updated.accessResponse = note.access.resp
+			cmd = openReqCmd(&updated)
+		case openReq:
+			fmt.Printf("findFilesProcess open (req): %v\n", note.open.req)
+			updated.openRequest = note.open.req
+		case openResp:
+			fmt.Printf("findFilesProcess open (resp): %v\n", note.open.resp)
+			updated.openResponse = note.open.resp
+			cmd = getattrReqCmd(&updated)
+		case getattrReq:
+			fmt.Printf("findFilesProcess getattr (req): %v\n", note.getattr.req)
+			updated.getattrRequest = note.getattr.req
+		case getattrResp:
+			fmt.Printf("findFilesProcess getattr (resp): %v\n", note.getattr.resp)
+			updated.getattrResponse = note.getattr.resp
+			cmd = readdirReqCmd(&updated)
 		case readdirReq:
 			fmt.Printf("findFilesProcess readdir (req): %v\n", note.readdir.req)
 			updated.readRequest = note.readdir.req
 		case readdirResp:
 			fmt.Printf("findFilesProcess readdir (resp): %v\n", note.readdir.resp)
 			updated.readResponse = note.readdir.resp
-			cmd = openReqCmd(&updated)
-		case openReq:
-			fmt.Printf("findFilesProcess open (req): %v\n", note.open.req)
-			updated.openRequests = append(updated.openRequests, note.open.req)
-		case openResp:
-			fmt.Printf("findFilesProcess open (resp): %v\n", note.open.resp)
-			updated.openResponses = append(updated.openResponses, note.open.resp)
-			if len(data.openResponses) == len(data.readResponse.Entries) {
-				cmd = getattrReqCmd(&updated)
+			cmd = lookupReqCmd(&updated)
+		case lookupReq:
+			fmt.Printf("findFilesProcess lookup (req): %v\n", note.lookup.req)
+			updated.lookupRequests = append(updated.lookupRequests, note.lookup.req)
+		case lookupResp:
+			fmt.Printf("findFilesProcess lookup (resp): %v\n", note.lookup.resp)
+			updated.lookupResponses = append(updated.lookupResponses, note.lookup.resp)
+			if len(data.lookupResponses) == len(data.readResponse.Entries) {
+				cmd = releaseReqCmd(&data)
 			} else {
-				cmd = batchCmd([]Cmd{
-					openReqCmd(&data), getattrReqCmd(&updated)})
-				debugf("cmd %v", cmd)
+				cmd = lookupReqCmd(&data)
 			}
-		case getattrReq:
-			fmt.Printf("findFilesProcess getattr (req): %v\n", note.getattr.req)
-			updated.getattrRequests = append(updated.getattrRequests, note.getattr.req)
-		case getattrResp:
-			// var (
-			// 	req  *OpenRequest
-			// 	resp *OpenResponse
-			// )
-			fmt.Printf("findFilesProcess getattr (resp): %v\n", note.getattr.resp)
-			updated.getattrResponses = append(updated.getattrResponses, note.getattr.resp)
-			if len(data.getattrResponses) == len(data.readResponse.Entries) {
-				updated.processState = processStateSettled
-			} else {
-				// idx := len(data.getattrResponses) + 1
-				// dirent := updated.readResponse.Entries[idx]
-				// fPath := filepath.Join(data.directive.fileInfo.Path(), dirent.Name)
-				// node := supplyNodeIdWithPath(fPath)
-				// for _, openReq := range data.openRequests {
-				// 	if openReq.Node == node {
-				// 		req = openReq
-				// 	}
-				// }
-				// for _, openResp := range data.openResponses {
-				// 	if openResp.Id == req.ID {
-				// 		resp = openResp
-				// 	}
-				// }
-				// if resp == nil {
-				// 	debug(resp)
-				// }
-				cmd = getattrReqCmd(&data)
-			}
+		case releaseReq:
+			fmt.Printf("findFilesProcess lookup (resp): %v\n", note.release.req)
+			updated.releaseRequest = note.release.req
+		case releaseResp:
+			fmt.Printf("findFilesProcess lookup (resp): %v\n", note.release.resp)
+			updated.releaseResponse = note.release.resp
+			updated.processState = processStateSettled
 		}
 		return
 	}
@@ -850,7 +935,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return _data
 	}
 
-	updateWith := func(arg processArg) {
+	updateWith := func(arg psor.ProcessArg) {
 		note := noteWith(arg)
 		_dispatch(note)
 	}
@@ -865,18 +950,18 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return &updated, cmd
 	}
 
-	findFilesProcess := &process[*findFilesProcessData]{
-		init:            init,
-		updateWith:      updateWith,
-		update:          update_,
-		subscribe:       subscribe,
-		putData:         putData,
-		getData:         getData,
-		getProcessState: getProcessState,
+	findFilesProcess := &psor.Process[*findFilesProcessData]{
+		Init:            init,
+		UpdateWith:      updateWith,
+		Update:          update_,
+		Subscribe:       subscribe,
+		PutData:         putData,
+		GetData:         getData,
+		GetProcessState: getProcessState,
 	}
 
-	findFilesProcessor := &processor[*findFilesProcessData]{
-		process: findFilesProcess,
+	findFilesProcessor := &psor.Processor[*findFilesProcessData]{
+		Process: findFilesProcess,
 	}
 
 	return &findFilesCompound{
@@ -994,7 +1079,7 @@ type Response interface {
 	// RespondError(error)
 
 	String() string
-	isProcessArg()
+	IsProcessArg()
 }
 
 type ErrorResponse struct {
@@ -1006,7 +1091,7 @@ type ErrorResponse struct {
 func (r *ErrorResponse) IsResponseType() {}
 func (r *ErrorResponse) PutId(id uint64) { r.Id = RequestID(id) }
 func (r *ErrorResponse) GetId() uint64   { return uint64(r.Id) }
-func (d *ErrorResponse) isProcessArg()   {}
+func (d *ErrorResponse) IsProcessArg()   {}
 
 // A Header describes the basic information sent in every request.
 type directiveHeader struct {
@@ -1349,11 +1434,11 @@ func (r *CreateFileAnswer) Hdr() *answerHeader { return &r.answerHeader }
 func (r *CreateFileAnswer) IsAnswerType()      {}
 
 type findFilesCompound struct {
-	processor *processor[*findFilesProcessData]
+	processor *psor.Processor[*findFilesProcessData]
 }
 
 func (c *findFilesCompound) nextReq() Request {
-	data := c.processor.fetch()
+	data := c.processor.Fetch()
 	req := data.dequeueReq()
 	switch r := req.(type) {
 	case *ReadRequest:
@@ -1364,40 +1449,40 @@ func (c *findFilesCompound) nextReq() Request {
 	return req
 }
 
-func (c *findFilesCompound) putReq(req processArg) {
-	c.processor.step(req)
+func (c *findFilesCompound) putReq(req psor.ProcessArg) {
+	c.processor.Step(req)
 }
 
-func (c *findFilesCompound) putResp(resp processArg) {
-	c.processor.step(resp)
+func (c *findFilesCompound) putResp(resp psor.ProcessArg) {
+	c.processor.Step(resp)
 }
 
 func (c *findFilesCompound) getReadRequest() *ReadRequest {
-	data := c.processor.fetch()
+	data := c.processor.Fetch()
 	return data.readRequest
 }
 
 func (c *findFilesCompound) putReadResponse(resp *ReadResponse) {
-	c.processor.step(resp)
+	c.processor.Step(resp)
 }
 
 func (c *findFilesCompound) getReadResponse() *ReadResponse {
-	data := c.processor.fetch()
+	data := c.processor.Fetch()
 	return data.readResponse
 }
 
 func (c *findFilesCompound) putGetattrResponse(resp *GetattrResponse) {
-	c.processor.step(resp)
+	c.processor.Step(resp)
 }
 
-func (c *findFilesCompound) getGetattrResponses() []*GetattrResponse {
-	data := c.processor.fetch()
-	return data.getattrResponses
+func (c *findFilesCompound) getGetLookupResponses() []*LookupResponse {
+	data := c.processor.Fetch()
+	return data.lookupResponses
 }
 
-func (c *findFilesCompound) getGetattrResponseByInode(inode uint64) *GetattrResponse {
-	data := c.processor.fetch()
-	for _, resp := range data.getattrResponses {
+func (c *findFilesCompound) getGetattrResponseByInode(inode uint64) *LookupResponse {
+	data := c.processor.Fetch()
+	for _, resp := range data.lookupResponses {
 		if resp.Attr.Inode == inode {
 			return resp
 		}
@@ -1406,7 +1491,7 @@ func (c *findFilesCompound) getGetattrResponseByInode(inode uint64) *GetattrResp
 }
 
 func (c *findFilesCompound) isComplete() bool {
-	return c.processor.state() == processStateSettled
+	return c.processor.State() == processStateSettled
 }
 
 func (c *findFilesCompound) isCompound() {}
@@ -1422,6 +1507,7 @@ type FindFilesDirective struct {
 }
 
 var _ Directive = (*FindFilesDirective)(nil)
+var _ psor.ProcessArg = (*FindFilesDirective)(nil)
 
 func (d *FindFilesDirective) principalDirectiveId() DirectiveID {
 	return d.id
@@ -1432,7 +1518,7 @@ func (d *FindFilesDirective) putDirectiveId(id DirectiveID) {
 }
 
 func (d *FindFilesDirective) startProcessor() {
-	d.compound.processor.start(d)
+	d.compound.processor.Start(d)
 }
 
 func (d *FindFilesDirective) nextReq() Request {
@@ -1494,7 +1580,7 @@ func (d *FindFilesDirective) String() string {
 
 func (d *FindFilesDirective) IsDirectiveType()      {}
 func (d *FindFilesDirective) getCompound() compound { return d.compound }
-func (d *FindFilesDirective) isProcessArg()         {}
+func (d *FindFilesDirective) IsProcessArg()         {}
 
 type FindFilesAnswer struct {
 	answerHeader
