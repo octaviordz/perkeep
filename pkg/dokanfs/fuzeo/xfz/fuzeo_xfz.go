@@ -1581,6 +1581,7 @@ var _ = Request(&AccessRequest{})
 func (r *AccessRequest) String() string {
 	return fmt.Sprintf("Access [%s] mask=%#x", &r.Header, r.Mask)
 }
+func (d *AccessRequest) IsProcessArg() {}
 
 // Respond replies to the request indicating that access is allowed.
 // To deny access, use RespondError.
@@ -1716,7 +1717,7 @@ func (r *GetattrResponse) String() string {
 func (r *GetattrResponse) IsResponseType() {}
 func (r *GetattrResponse) PutId(id uint64) { r.Id = RequestID(id) }
 func (r *GetattrResponse) GetId() uint64   { return uint64(r.Id) }
-func (d *GetattrResponse) IsProcessArg()   {}
+func (r *GetattrResponse) IsProcessArg()   {}
 
 func mkFileAttributesWithAttr(attr Attr) dokan.FileAttribute {
 	// FileAttributeReadonly = FileAttribute(0x00000001)FileAttributeReadonly
@@ -1901,6 +1902,7 @@ var _ = Request(&LookupRequest{})
 func (r *LookupRequest) String() string {
 	return fmt.Sprintf("Lookup [%s] %q", &r.Header, r.Name)
 }
+func (d *LookupRequest) IsProcessArg() {}
 
 // Respond replies to the request with the given response.
 func (r *LookupRequest) Respond(resp *LookupResponse) {
@@ -1919,6 +1921,7 @@ func (r *LookupRequest) Respond(resp *LookupResponse) {
 
 // A LookupResponse is the response to a LookupRequest.
 type LookupResponse struct {
+	ResponseHeader
 	Node       NodeID
 	Generation uint64
 	EntryValid time.Duration
@@ -1930,8 +1933,13 @@ func (r *LookupResponse) string() string {
 }
 
 func (r *LookupResponse) String() string {
-	return fmt.Sprintf("Lookup %s", r.string())
+	return fmt.Sprintf("Lookup [%s] %s", &r.ResponseHeader, r.string())
 }
+
+func (r *LookupResponse) IsResponseType() {}
+func (r *LookupResponse) PutId(id uint64) { r.Id = RequestID(id) }
+func (r *LookupResponse) GetId() uint64   { return uint64(r.Id) }
+func (r *LookupResponse) IsProcessArg()   {}
 
 // An OpenRequest asks to open a file or directory
 type OpenRequest struct {

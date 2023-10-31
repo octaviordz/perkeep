@@ -1,11 +1,11 @@
 package xfz // import "perkeep.org/pkg/dokanfs/fuzeo/xfz"
 
 import (
-	"container/ring"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/keybase/client/go/kbfs/dokan"
 
@@ -250,257 +250,347 @@ type processArg interface {
 	isProcessArg()
 }
 
-type processState = uint8
-
 const (
 	processStatePending = iota
 	processStateSettled
 )
 
-type Dispatch = func(note any)
+func makeCreateFileProcess(ctx context.Context) *psor.Processor[*createFileProcessData] {
 
-type Effect = func(dispatch Dispatch)
+	type enqueueReq struct {
+		req Request
+	}
 
-type Cmd = []Effect
+	type access struct {
+		req  *AccessRequest
+		resp *AccessResponse
+	}
 
-var CmdNone = []Effect{}
+	type open struct {
+		isDirent bool
+		req      *OpenRequest
+		resp     *OpenResponse
+	}
 
-func execCmd(dispatch Dispatch, cmd Cmd) {
-	if cmd == nil {
+	type getattr struct {
+		isDirent bool
+		req      *GetattrRequest
+		resp     *GetattrResponse
+	}
+
+	type lookup struct {
+		req  *LookupRequest
+		resp *LookupResponse
+	}
+
+	const (
+		getattrReq   = createFileNoteKindGetattrReq
+		getattrResp  = createFileNoteKindGetattrResp
+		lookupReq    = createFileNoteKindLookupReq
+		lookupResp   = createFileNoteKindLookupResp
+		accessReq    = createFileNoteKindAccessReq
+		accessResp   = createFileNoteKindAccessResp
+		openReq      = createFileNoteKindOpenReq
+		openResp     = createFileNoteKindOpenResp
+		nkEnqueueReq = createFileNoteKindEnqueuReq
+	)
+
+	type note struct {
+		kind       createFileNoteKind
+		enqueueReq *enqueueReq
+		getattr    *getattr
+		lookup     *lookup
+		access     *access
+		open       *open
+	}
+
+	init := func(arg psor.ProcessArg) (data *createFileProcessData, cmd psor.Cmd) {
+		switch d := arg.(type) {
+		case *CreateFileDirective:
+			req := &GetattrRequest{
+				Header: makeHeaderWithDirective(d),
+				Handle: HandleID(0),
+				Flags:  0,
+			}
+			data = &createFileProcessData{
+				processState: processStatePending,
+				directive:    d,
+				reqR:         psor.NewRingBuffer(),
+			}
+			// Set and enqueue request.
+			cmd = psor.BatchCmd([]psor.Cmd{
+				psor.CmdOfNote(note{kind: getattrReq,
+					getattr: &getattr{req: req},
+				}),
+				psor.CmdOfNote(note{kind: nkEnqueueReq,
+					enqueueReq: &enqueueReq{req: req},
+				}),
+			})
+		}
 		return
 	}
-	for _, call := range cmd {
-		if call == nil || dispatch == nil {
-			continue
+
+	noteWith := func(arg psor.ProcessArg) (r note) {
+		switch arg := arg.(type) {
+		case *GetattrRequest:
+			r = note{
+				kind: createFileNoteKindGetattrReq,
+				getattr: &getattr{
+					req: arg,
+				},
+			}
+		case *GetattrResponse:
+			r = note{
+				kind: createFileNoteKindGetattrResp,
+				getattr: &getattr{
+					resp: arg,
+				},
+			}
+		case *LookupRequest:
+			r = note{
+				kind: createFileNoteKindLookupReq,
+				lookup: &lookup{
+					req: arg,
+				},
+			}
+		case *LookupResponse:
+			r = note{
+				kind: createFileNoteKindLookupResp,
+				lookup: &lookup{
+					resp: arg,
+				},
+			}
+		case *AccessRequest:
+			r = note{
+				kind: createFileNoteKindAccessReq,
+				access: &access{
+					req: arg,
+				},
+			}
+		case *AccessResponse:
+			r = note{
+				kind: createFileNoteKindAccessResp,
+				access: &access{
+					resp: arg,
+				},
+			}
+		case *OpenRequest:
+			r = note{
+				kind: createFileNoteKindOpenReq,
+				open: &open{
+					req: arg,
+				},
+			}
+		case *OpenResponse:
+			r = note{
+				kind: createFileNoteKindOpenReq,
+				open: &open{
+					resp: arg,
+				},
+			}
 		}
-		call(dispatch)
-	}
-}
-
-type Unsubscriber = func()
-
-type SubId = uint8
-
-type Subscribe = func(dispatch Dispatch) Unsubscriber
-
-type Subent struct {
-	SubId
-	Subscribe
-}
-
-type Sub = []Subent
-
-type Subedent struct {
-	SubId
-	Unsubscriber
-}
-
-type diffSubsResult struct {
-	dupes   subIdSet
-	toStop  []Subedent
-	toKeep  []Subedent
-	toStart []Subent
-}
-
-type subIdSet map[SubId]bool
-
-func newSubIdSet() subIdSet {
-	return make(subIdSet)
-}
-
-func (s subIdSet) add(item SubId) {
-	s[item] = true
-}
-
-func (s subIdSet) remove(item SubId) {
-	delete(s, item)
-}
-
-func (s subIdSet) contains(item SubId) bool {
-	return s[item]
-}
-
-func (s subIdSet) equals(su subIdSet) bool {
-	if len(s) != len(su) {
-		return false
+		return
 	}
 
-	for key := range s {
-		if !su.contains(key) {
-			return false
+	reqReadyCmd := func(data *createFileProcessData) psor.Cmd {
+		v := data.reqR.Peek()
+		isInit := data.accessRequest == nil || v == data.accessRequest
+		fxj := func(dispatch psor.Dispatch) {
+			if isInit {
+				// Must not publish during Init.
+				// Initial request is read by conn.ReadRequest.
+				return
+			}
+			diesm.publishDirective(ctx, data.directive)
 		}
+		return []psor.Effect{fxj}
 	}
 
-	return true
-}
+	// Lookup for each part/section of path
+	// initLookupCmd := func(data *createFileProcessData) psor.Cmd {
+	// 	d := data.directive
+	// 	fpath := d.fileInfo.Path()
+	// 	parts := strings.Split(fpath, string(filepath.Separator))
+	// 	fPathPartLen := len(parts)
+	// 	node := supplyNodeIdWithPath(fPath)
+	// 	return psor.CmdOfNote(note{kind: initLookup,
+	// 			initLookup: &initLookup{req: fPathPartLen},
+	// 	})
+	// }
 
-func diffSubs(activeSubs []Subedent, sub Sub) (r diffSubsResult) {
-	keys := newSubIdSet()
-	for _, subedent := range activeSubs {
-		keys.add(subedent.SubId)
-	}
-	// let dupes, newKeys, newSubs = NewSubs.calculate sub
-	dupes := newSubIdSet()
-	newKeys := newSubIdSet()
-	newSubs := []Subent{}
-	for _, s := range sub {
-		if newKeys.contains(s.SubId) {
-			dupes.add(s.SubId)
-		} else {
-			newKeys.add(s.SubId)
-			newSubs = append(newSubs, s)
+	// Lookup for each part/section of path
+	lookupReqCmd := func(data *createFileProcessData) psor.Cmd {
+		d := data.directive
+		idx := len(data.lookupRequests)
+		fPath := d.fileInfo.Path()
+		parts := strings.Split(fPath, string(filepath.Separator))
+		name := parts[idx]
+		nPath := filepath.Join(fPath, name)
+		node := supplyNodeIdWithPath(nPath)
+		req := &LookupRequest{
+			Header: makeHeaderWith(node, d),
+			Name:   name,
 		}
+		// Set and enqueue request
+		return psor.BatchCmd([]psor.Cmd{
+			psor.CmdOfNote(note{kind: lookupReq,
+				lookup: &lookup{req: req},
+			}),
+			psor.CmdOfNote(note{kind: nkEnqueueReq,
+				enqueueReq: &enqueueReq{req: req},
+			}),
+		})
 	}
-	// if keys = newKeys then
-	if keys.equals(newKeys) {
-		r = diffSubsResult{
-			dupes:   dupes,
-			toStop:  []Subedent{},
-			toKeep:  activeSubs,
-			toStart: []Subent{},
+
+	accessReqCmd := func(data *createFileProcessData) psor.Cmd {
+		d := data.directive
+		fPath := d.fileInfo.Path()
+		node := supplyNodeIdWithPath(fPath)
+		req := &AccessRequest{
+			Header: makeHeaderWith(node, d),
+			Mask:   0x1,
 		}
-	} else {
-		toKeep := []Subedent{}
-		toStop := []Subedent{}
-		for _, s := range activeSubs {
-			if newKeys.contains(s.SubId) {
-				toKeep = append(toKeep, s)
+		// Set and enqueue request
+		return psor.BatchCmd([]psor.Cmd{
+			psor.CmdOfNote(note{kind: accessReq,
+				access: &access{req: req},
+			}),
+			psor.CmdOfNote(note{kind: nkEnqueueReq,
+				enqueueReq: &enqueueReq{req: req},
+			}),
+		})
+	}
+
+	openReqCmd := func(data *createFileProcessData) psor.Cmd {
+		d := data.directive
+		fPath := d.fileInfo.Path()
+		isDir := fileInfos.isDir(fPath)
+		node := supplyNodeIdWithPath(fPath)
+		req := &OpenRequest{
+			Header:    makeHeaderWith(node, d),
+			Dir:       isDir,
+			Flags:     OpenDirectory,
+			OpenFlags: OpenRequestFlags(0),
+		}
+		// Set and enqueue request
+		return psor.BatchCmd([]psor.Cmd{
+			psor.CmdOfNote(note{kind: openReq,
+				open: &open{req: req},
+			}),
+			psor.CmdOfNote(note{kind: nkEnqueueReq,
+				enqueueReq: &enqueueReq{req: req},
+			}),
+		})
+	}
+
+	update := func(note note, data createFileProcessData) (updated createFileProcessData, cmd psor.Cmd) {
+		updated = data
+		cmd = nil
+		switch note.kind {
+		case nkEnqueueReq:
+			fmt.Printf("createFileProcess enqueueReq: %v\n", note.enqueueReq.req)
+			updated.reqR.Push(note.enqueueReq.req)
+			cmd = reqReadyCmd(&updated)
+		case getattrReq:
+			fmt.Printf("createFileProcess getattr (req): %v\n", note.getattr.req)
+			updated.getattrRequest = note.getattr.req
+		case getattrResp:
+			fmt.Printf("createFileProcess getattr (resp): %v\n", note.getattr.resp)
+			updated.getattrResponse = note.getattr.resp
+			cmd = lookupReqCmd(&updated)
+		case lookupReq:
+			fmt.Printf("createFileProcess lookup (req): %v\n", note.lookup.req)
+			updated.lookupRequests = append(updated.lookupRequests, note.lookup.req)
+		case lookupResp:
+			fmt.Printf("createFileProcess lookup (resp): %v\n", note.lookup.resp)
+			fpath := data.directive.fileInfo.Path()
+			parts := strings.Split(fpath, string(filepath.Separator))
+			updated.lookupResponses = append(updated.lookupResponses, note.lookup.resp)
+			if len(updated.lookupResponses) >= len(parts) {
+				cmd = accessReqCmd(&data)
 			} else {
-				toStop = append(toStop, s)
+				cmd = lookupReqCmd(&data)
 			}
+		case accessReq:
+			fmt.Printf("createFileProcess access (req): %v\n", note.access.req)
+			updated.accessRequest = note.access.req
+		case accessResp:
+			fmt.Printf("createFileProcess access (req): %v\n", note.access.req)
+			updated.accessResponse = note.access.resp
+			cmd = openReqCmd(&updated)
+		case openReq:
+			fmt.Printf("createFileProcess open (req): %v\n", note.open.req)
+			updated.openRequest = note.open.req
+		case openResp:
+			fmt.Printf("createFileProcess open (resp): %v\n", note.open.resp)
+			updated.openResponse = note.open.resp
+			updated.processState = processStateSettled
 		}
-		toStart := []Subent{}
-		for _, s := range newSubs {
-			if !keys.contains(s.SubId) {
-				toStart = append(toStart, s)
+		return
+	}
+
+	var __dispatch psor.Dispatch
+	_dispatch := func(note note) {
+		if __dispatch == nil {
+			return
+		}
+		__dispatch(note)
+	}
+
+	subWith := func() psor.Subscribe {
+		start := func(dispatch psor.Dispatch) psor.Unsubscriber {
+			__dispatch = dispatch
+			unsub := func() {
+				__dispatch = nil
 			}
+			return unsub
 		}
-		r = diffSubsResult{
-			dupes:   dupes,
-			toStop:  toStop,
-			toKeep:  toKeep,
-			toStart: toStart,
-		}
+		return start
 	}
-	return
-}
 
-func changeSubs(dispatch Dispatch, diffResult diffSubsResult) []Subedent {
-	r := []Subedent{}
-	for _, subent := range diffResult.toStart {
-		id := subent.SubId
-		start := subent.Subscribe
-		unsub := start(dispatch)
-		r = append(r, Subedent{id, unsub})
+	subscribe := func(data *createFileProcessData) psor.Sub {
+		subent := psor.Subent{1, subWith()}
+		r := []psor.Subent{subent}
+		return r
 	}
-	return r
-}
 
-type process[Tdata any] struct {
-	init            func(processArg) (Tdata, Cmd)
-	putData         func(Tdata)
-	getData         func() Tdata
-	getProcessState func() processState
-	update          func(note any, data Tdata) (Tdata, Cmd)
-	updateWith      func(processArg)
-	subscribe       func(data Tdata) Sub
-}
-
-type processor[Tdata any] struct {
-	process *process[Tdata]
-}
-
-type ringBuffer struct {
-	h *ring.Ring
-	r *ring.Ring
-}
-
-func newRingBuffer() *ringBuffer {
-	r := ring.New(1)
-	return &ringBuffer{
-		h: r,
-		r: r,
+	var _data *createFileProcessData
+	putData := func(data *createFileProcessData) {
+		_data = data
 	}
-}
 
-func (x *ringBuffer) push(v any) {
-	x.r.Value = v
-	s := ring.New(1)
-	x.r.Link(s)
-	x.r = s
-}
-
-func (x *ringBuffer) pop() any {
-	if x.h != x.r {
-		rl := x.r.Unlink(1)
-		debugf("ring buffer length %d", rl.Len())
-		x.h = x.r.Next()
-		return rl.Value
+	getData := func() *createFileProcessData {
+		return _data
 	}
-	return nil
-}
 
-func (x *ringBuffer) peek() any {
-	if x.h != x.r {
-		v := x.h.Value
-		return v
+	updateWith := func(arg psor.ProcessArg) {
+		note := noteWith(arg)
+		_dispatch(note)
 	}
-	return nil
-}
 
-func (p *processor[Tdata]) start(arg processArg) {
-	var (
-		dispatch    func(note any)
-		processNote func()
-	)
-	rb := newRingBuffer()
-	data, cmd := p.process.init(arg)
-	sub := p.process.subscribe(data)
-	reentered := false
-	state := data
-	activeSubs := []Subedent{}
-	dispatch = func(note any) {
-		rb.push(note)
-		if !reentered {
-			reentered = true
-			processNote()
-			reentered = false
-		}
+	getProcessState := func() psor.ProcessState {
+		return _data.processState
 	}
-	processNote = func() {
-		nextNote := rb.pop()
-		for {
-			if nextNote == nil {
-				break
-			}
-			note := nextNote
-			data, cmd := p.process.update(note, state)
-			sub := p.process.subscribe(data)
-			p.process.putData(data)
-			execCmd(dispatch, cmd)
-			state = data
-			activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
-			nextNote = rb.pop()
-		}
+
+	update_ := func(anote any, data *createFileProcessData) (*createFileProcessData, psor.Cmd) {
+		n := anote.(note)
+		updated, cmd := update(n, *data)
+		return &updated, cmd
 	}
-	reentered = true
-	p.process.putData(data)
-	execCmd(dispatch, cmd)
-	activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
-	processNote()
-	reentered = false
-}
 
-func (p *processor[Tdata]) step(arg processArg) {
-	p.process.updateWith(arg)
-}
+	createFileProcess := &psor.Process[*createFileProcessData]{
+		Init:            init,
+		UpdateWith:      updateWith,
+		Update:          update_,
+		Subscribe:       subscribe,
+		PutData:         putData,
+		GetData:         getData,
+		GetProcessState: getProcessState,
+	}
 
-func (p *processor[Tdata]) fetch() Tdata {
-	return p.process.getData()
-}
-
-func (p *processor[Tdata]) state() processState {
-	return p.process.getProcessState()
+	return &psor.Processor[*createFileProcessData]{
+		Process: createFileProcess,
+	}
 }
 
 type findFilesNoteKind = int
@@ -524,7 +614,7 @@ const (
 )
 
 type findFilesProcessData struct {
-	processState    processState
+	processState    psor.ProcessState
 	directive       *FindFilesDirective
 	accessRequest   *AccessRequest
 	accessResponse  *AccessResponse
@@ -538,27 +628,14 @@ type findFilesProcessData struct {
 	lookupResponses []*LookupResponse
 	releaseRequest  *ReleaseRequest
 	releaseResponse *ReleaseResponse
-	reqR            *ringBuffer
-}
-
-func (x *findFilesProcessData) enqueueReq(req Request) {
-	x.reqR.push(req)
+	reqR            *psor.RingBuffer
 }
 
 func (x *findFilesProcessData) dequeueReq() Request {
-	v := x.reqR.pop()
+	v := x.reqR.Pop()
 	if v == nil {
 		debug(v)
 	}
-	switch req := v.(type) {
-	case Request:
-		return req
-	}
-	return nil
-}
-
-func (x *findFilesProcessData) peekReq() Request {
-	v := x.reqR.peek()
 	switch req := v.(type) {
 	case Request:
 		return req
@@ -637,22 +714,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		release    *release
 	}
 
-	cmdOfNote := func(n note) Cmd {
-		f := func(dispatch Dispatch) {
-			dispatch(n)
-		}
-		return []Effect{f}
-	}
-
-	batchCmd := func(cmds []Cmd) Cmd {
-		var result Cmd = make(Cmd, 0, len(cmds))
-		for _, cmd := range cmds {
-			result = append(result, cmd...)
-		}
-		return result
-	}
-
-	init := func(arg psor.ProcessArg) (data *findFilesProcessData, cmd Cmd) {
+	init := func(arg psor.ProcessArg) (data *findFilesProcessData, cmd psor.Cmd) {
 		switch d := arg.(type) {
 		case *FindFilesDirective:
 			accessRequest := &AccessRequest{
@@ -662,14 +724,14 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			data = &findFilesProcessData{
 				processState: processStatePending,
 				directive:    d,
-				reqR:         newRingBuffer(),
+				reqR:         psor.NewRingBuffer(),
 			}
 			// Set and enqueue request.
-			cmd = batchCmd([]Cmd{
-				cmdOfNote(note{kind: accessReq,
+			cmd = psor.BatchCmd([]psor.Cmd{
+				psor.CmdOfNote(note{kind: accessReq,
 					access: &access{req: accessRequest},
 				}),
-				cmdOfNote(note{kind: nkEnqueueReq,
+				psor.CmdOfNote(note{kind: nkEnqueueReq,
 					enqueueReq: &enqueueReq{req: accessRequest},
 				}),
 			})
@@ -721,27 +783,41 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 					resp: arg,
 				},
 			}
+		case *LookupRequest:
+			r = note{
+				kind: findFilesNoteKindLookupReq,
+				lookup: &lookup{
+					req: arg,
+				},
+			}
+		case *LookupResponse:
+			r = note{
+				kind: findFilesNoteKindLookupResp,
+				lookup: &lookup{
+					resp: arg,
+				},
+			}
 		}
 		return
 	}
 
-	reqReadyCmd := func(data *findFilesProcessData) Cmd {
-		v := data.peekReq()
-		isInit := data.readRequest == nil || v == data.readRequest
-		fxj := func(dispatch Dispatch) {
+	reqReadyCmd := func(data *findFilesProcessData) psor.Cmd {
+		v := data.reqR.Peek()
+		isInit := data.accessRequest == nil || v == data.accessRequest
+		fxj := func(dispatch psor.Dispatch) {
 			if isInit {
 				// Must not publish when init.
-				// Initial request read by ReadRequest.
+				// Initial request is read by serve > conn.ReadRequest.
 				return
 			}
 			diesm.publishDirective(ctx, data.directive)
 		}
-		return []Effect{fxj}
+		return []psor.Effect{fxj}
 	}
 
-	readdirReqCmd := func(data *findFilesProcessData) Cmd {
+	readdirReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
-		fxi := func(dispatch Dispatch) {
+		fxi := func(dispatch psor.Dispatch) {
 			handle := data.openResponse.Handle
 			readRequest := &ReadRequest{
 				Header:    makeHeaderWithDirective(d),
@@ -756,10 +832,10 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 				enqueueReq: &enqueueReq{req: readRequest},
 			})
 		}
-		return Cmd{fxi}
+		return psor.Cmd{fxi}
 	}
 
-	openReqCmd := func(data *findFilesProcessData) Cmd {
+	openReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
 		fPath := d.fileInfo.Path()
 		isDir := fileInfos.isDir(fPath)
@@ -771,17 +847,17 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			OpenFlags: OpenRequestFlags(0),
 		}
 		// Set and enqueue request
-		return batchCmd([]Cmd{
-			cmdOfNote(note{kind: openReq,
+		return psor.BatchCmd([]psor.Cmd{
+			psor.CmdOfNote(note{kind: openReq,
 				open: &open{req: req},
 			}),
-			cmdOfNote(note{kind: nkEnqueueReq,
+			psor.CmdOfNote(note{kind: nkEnqueueReq,
 				enqueueReq: &enqueueReq{req: req},
 			}),
 		})
 	}
 
-	getattrReqCmd := func(data *findFilesProcessData) Cmd {
+	getattrReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
 		fPath := d.fileInfo.Path()
 		node := supplyNodeIdWithPath(fPath)
@@ -791,17 +867,17 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			Flags:  0,
 		}
 		// Set and enqueue request
-		return batchCmd([]Cmd{
-			cmdOfNote(note{kind: getattrReq,
+		return psor.BatchCmd([]psor.Cmd{
+			psor.CmdOfNote(note{kind: getattrReq,
 				getattr: &getattr{req: req},
 			}),
-			cmdOfNote(note{kind: nkEnqueueReq,
+			psor.CmdOfNote(note{kind: nkEnqueueReq,
 				enqueueReq: &enqueueReq{req: req},
 			}),
 		})
 	}
 
-	lookupReqCmd := func(data *findFilesProcessData) Cmd {
+	lookupReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
 		idx := len(data.lookupRequests)
 		dirent := data.readResponse.Entries[idx]
@@ -812,17 +888,17 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			Name:   dirent.Name,
 		}
 		// Set and enqueue request
-		return batchCmd([]Cmd{
-			cmdOfNote(note{kind: lookupReq,
+		return psor.BatchCmd([]psor.Cmd{
+			psor.CmdOfNote(note{kind: lookupReq,
 				lookup: &lookup{req: req},
 			}),
-			cmdOfNote(note{kind: nkEnqueueReq,
+			psor.CmdOfNote(note{kind: nkEnqueueReq,
 				enqueueReq: &enqueueReq{req: req},
 			}),
 		})
 	}
 
-	releaseReqCmd := func(data *findFilesProcessData) Cmd {
+	releaseReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
 		openReq := data.openRequest
 		handle := data.openResponse.Handle
@@ -833,23 +909,23 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 			Flags:  openReq.Flags,
 		}
 		// Set and enqueue request
-		return batchCmd([]Cmd{
-			cmdOfNote(note{kind: releaseReq,
+		return psor.BatchCmd([]psor.Cmd{
+			psor.CmdOfNote(note{kind: releaseReq,
 				release: &release{req: req},
 			}),
-			cmdOfNote(note{kind: nkEnqueueReq,
+			psor.CmdOfNote(note{kind: nkEnqueueReq,
 				enqueueReq: &enqueueReq{req: req},
 			}),
 		})
 	}
 
-	update := func(note note, data findFilesProcessData) (updated findFilesProcessData, cmd Cmd) {
+	update := func(note note, data findFilesProcessData) (updated findFilesProcessData, cmd psor.Cmd) {
 		updated = data
 		cmd = nil
 		switch note.kind {
 		case nkEnqueueReq:
 			fmt.Printf("findFilesProcess enqueueReq: %v\n", note.enqueueReq.req)
-			updated.enqueueReq(note.enqueueReq.req)
+			updated.reqR.Push(note.enqueueReq.req)
 			cmd = reqReadyCmd(&updated)
 		case accessReq:
 			fmt.Printf("findFilesProcess access (req): %v\n", note.access.req)
@@ -901,7 +977,7 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return
 	}
 
-	var __dispatch Dispatch
+	var __dispatch psor.Dispatch
 	_dispatch := func(note note) {
 		if __dispatch == nil {
 			return
@@ -909,8 +985,8 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		__dispatch(note)
 	}
 
-	subWith := func() Subscribe {
-		start := func(dispatch Dispatch) Unsubscriber {
+	subWith := func() psor.Subscribe {
+		start := func(dispatch psor.Dispatch) psor.Unsubscriber {
 			__dispatch = dispatch
 			unsub := func() {
 				__dispatch = nil
@@ -920,9 +996,9 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		return start
 	}
 
-	subscribe := func(data *findFilesProcessData) Sub {
-		subent := Subent{1, subWith()}
-		r := []Subent{subent}
+	subscribe := func(data *findFilesProcessData) psor.Sub {
+		subent := psor.Subent{1, subWith()}
+		r := []psor.Subent{subent}
 		return r
 	}
 
@@ -940,11 +1016,11 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		_dispatch(note)
 	}
 
-	getProcessState := func() processState {
+	getProcessState := func() psor.ProcessState {
 		return _data.processState
 	}
 
-	update_ := func(anote any, data *findFilesProcessData) (*findFilesProcessData, Cmd) {
+	update_ := func(anote any, data *findFilesProcessData) (*findFilesProcessData, psor.Cmd) {
 		n := anote.(note)
 		updated, cmd := update(n, *data)
 		return &updated, cmd
@@ -1093,11 +1169,28 @@ func (r *ErrorResponse) PutId(id uint64) { r.Id = RequestID(id) }
 func (r *ErrorResponse) GetId() uint64   { return uint64(r.Id) }
 func (d *ErrorResponse) IsProcessArg()   {}
 
+type fileInfo interface {
+	Path() string
+	NumberOfFileHandles() uint32
+}
+
+type fileInfoImp struct {
+	path string
+}
+
+var _ fileInfo = (*fileInfoImp)(nil)
+
+func (fi *fileInfoImp) Path() string {
+	return fi.path
+}
+
+func (fi *fileInfoImp) NumberOfFileHandles() uint32 { return 0 }
+
 // A Header describes the basic information sent in every request.
 type directiveHeader struct {
-	id       DirectiveID     // unique ID for directive
-	fileInfo *dokan.FileInfo // file or directory the request is about
-	node     NodeID          // file or directory the request is about
+	id       DirectiveID // unique ID for directive
+	fileInfo fileInfo    // file or directory the request is about
+	node     NodeID      // file or directory the request is about
 }
 
 type answerHeader struct {
@@ -1195,16 +1288,48 @@ func (m *FileInfoModule) isDir(path string) (isDir bool) {
 	return
 }
 
-func (m *FileInfoModule) isDirWithFileInfo(fi *dokan.FileInfo) (isDir bool) {
+func (m *FileInfoModule) isDirWithFileInfo(fi fileInfo) (isDir bool) {
 	path := fi.Path()
 	isDir = m.isDir(path)
 	return
+}
+
+type createFileNoteKind = int
+
+const (
+	createFileNoteKindRespBitMask = createFileNoteKind(0b0001_00000000)
+	createFileNoteKindGetattrReq  = createFileNoteKind(opGetattr)
+	createFileNoteKindGetattrResp = createFileNoteKind(createFileNoteKindRespBitMask | opGetattr)
+	createFileNoteKindLookupReq   = findFilesNoteKind(opLookup)
+	createFileNoteKindLookupResp  = findFilesNoteKind(createFileNoteKindRespBitMask | opLookup)
+	createFileNoteKindAccessReq   = createFileNoteKind(opAccess)
+	createFileNoteKindAccessResp  = createFileNoteKind(createFileNoteKindRespBitMask | opAccess)
+	createFileNoteKindOpenReq     = createFileNoteKind(opOpen) // opOpendir
+	createFileNoteKindOpenResp    = createFileNoteKind(createFileNoteKindRespBitMask | opOpen)
+	createFileNoteKindPush        = createFileNoteKind(0b1000_1000_0000)
+	createFileNoteKindEnqueuReq   = createFileNoteKind(0b1000_1111_0000)
+)
+
+type createFileProcessData struct {
+	processState    psor.ProcessState
+	directive       *CreateFileDirective
+	getattrRequest  *GetattrRequest
+	getattrResponse *GetattrResponse
+	fPathPartLen    int
+	lookupRequests  []*LookupRequest
+	lookupResponses []*LookupResponse
+	accessRequest   *AccessRequest
+	accessResponse  *AccessResponse
+	openRequest     *OpenRequest
+	openResponse    *OpenResponse
+	reqR            *psor.RingBuffer
 }
 
 type CreateFileDirective struct {
 	directiveHeader
 	a          Answer
 	CreateData *dokan.CreateData
+	processor  *psor.Processor[*createFileProcessData]
 }
 
 var _ Directive = (*CreateFileDirective)(nil)
@@ -1213,7 +1338,9 @@ func (d *CreateFileDirective) principalDirectiveId() DirectiveID {
 	return d.id
 }
 func (d *CreateFileDirective) putDirectiveId(id DirectiveID) { d.id = id }
-func (d *CreateFileDirective) startProcessor()               {}
+func (d *CreateFileDirective) startProcessor() {
+	d.processor.Start(d)
+}
 
 func (d *CreateFileDirective) nextReq() (req Request) {
 	// fuse_operations::mknod
@@ -1223,33 +1350,38 @@ func (d *CreateFileDirective) nextReq() (req Request) {
 	// fuse_operations::open
 	cd := d.CreateData
 	isDir := fileInfos.isDirWithFileInfo(d.Hdr().fileInfo)
-	if isDir {
-		if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-			debugf("ReadRequest fuse_operations::opendir")
-			req = &OpenRequest{
-				Header:    makeHeaderWithDirective(d),
-				Dir:       isDir,
-				Flags:     OpenDirectory,
-				OpenFlags: OpenRequestFlags(0),
-			}
-		} else if cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
+	data := d.processor.Fetch()
+	req = data.reqR.Pop().(Request)
+	switch req.(type) {
+	case *OpenRequest:
+		if isDir {
+			if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+				debugf("ReadRequest fuse_operations::opendir")
+				// req = &OpenRequest{
+				// 	Header:    makeHeaderWithDirective(d),
+				// 	Dir:       isDir,
+				// 	Flags:     OpenDirectory,
+				// 	OpenFlags: OpenRequestFlags(0),
+				// }
+			} else if cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
 
-		}
-	} else {
-		if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
-			// https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/access-mask
-			// https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/access-mask?redirectedfrom=MSDN
-			// CreateData.DesiredAccess=100100000000010001001
-			// CreateData.FileAttributes=0
-			// CreateData.ShareAccess=111
-			// CreateData.CreateDisposition=1
-			// CreateData.CreateOptions=1100100
-			debugf("ReadRequest fuse_operations::open")
-			req = &OpenRequest{
-				Header:    makeHeaderWithDirective(d),
-				Dir:       isDir,
-				Flags:     OpenDirectory,
-				OpenFlags: OpenRequestFlags(0),
+			}
+		} else {
+			if cd.CreateDisposition&dokan.FileOpen == dokan.FileOpen {
+				// https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/access-mask
+				// https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/access-mask?redirectedfrom=MSDN
+				// CreateData.DesiredAccess=100100000000010001001
+				// CreateData.FileAttributes=0
+				// CreateData.ShareAccess=111
+				// CreateData.CreateDisposition=1
+				// CreateData.CreateOptions=1100100
+				debugf("ReadRequest fuse_operations::open")
+				// req = &OpenRequest{
+				// 	Header:    makeHeaderWithDirective(d),
+				// 	Dir:       isDir,
+				// 	Flags:     OpenDirectory,
+				// 	OpenFlags: OpenRequestFlags(0),
+				// }
 			}
 		}
 	}
@@ -1315,6 +1447,7 @@ func (d *CreateFileDirective) String() string {
 		d.CreateData.CreateOptions)
 }
 func (d *CreateFileDirective) IsDirectiveType() {}
+func (d *CreateFileDirective) IsProcessArg()    {}
 
 func (d *CreateFileDirective) makeRequest() Request {
 	var result Request
@@ -1518,6 +1651,8 @@ func (d *FindFilesDirective) putDirectiveId(id DirectiveID) {
 }
 
 func (d *FindFilesDirective) startProcessor() {
+	// processor := d.compound.processor.WithConsoleLog()
+	// processor.Start(d)
 	d.compound.processor.Start(d)
 }
 

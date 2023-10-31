@@ -55,6 +55,7 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 			node:     supplyNodeIdWithPath(fi.Path()),
 		},
 		CreateData: cd,
+		processor:  makeCreateFileProcess(ctx),
 	}
 	// openRequest := fuzeo.OpenRequest{
 	// 	Header: header,
@@ -87,7 +88,7 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	// 		Flags:  openFlags(in.Flags),
 	// 	}
 
-	//TODO(ORC): Process response.
+	//TODO(ORC): Process answer.
 	answer, err := diesm.PostDirective(ctx, directive)
 	if err != nil {
 		debug(answer)

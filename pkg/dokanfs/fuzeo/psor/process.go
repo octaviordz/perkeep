@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-func toConsole(format string, a ...any) (n int, err error) {
-	return fmt.Printf(format, a)
+func printf(format string, a ...any) (n int, err error) {
+	return fmt.Printf(format, a...)
 }
 
 type ProcessArg interface {
@@ -15,10 +15,10 @@ type ProcessArg interface {
 
 type ProcessState = uint8
 
-const (
-	processStatePending = iota
-	processStateSettled
-)
+// const (
+// 	processStatePending = iota
+// 	processStateSettled
+// )
 
 type Dispatch = func(note any)
 
@@ -27,6 +27,21 @@ type Effect = func(dispatch Dispatch)
 type Cmd = []Effect
 
 var CmdNone = []Effect{}
+
+func CmdOfNote(note any) Cmd {
+	f := func(dispatch Dispatch) {
+		dispatch(note)
+	}
+	return []Effect{f}
+}
+
+func BatchCmd(cmds []Cmd) Cmd {
+	var result Cmd = make(Cmd, 0, len(cmds))
+	for _, cmd := range cmds {
+		result = append(result, cmd...)
+	}
+	return result
+}
 
 func execCmd(dispatch Dispatch, cmd Cmd) {
 	if cmd == nil {
@@ -163,27 +178,27 @@ type Processor[Tdata any] struct {
 	Process *Process[Tdata]
 }
 
-type ringBuffer struct {
+type RingBuffer struct {
 	h *ring.Ring
 	r *ring.Ring
 }
 
-func newRingBuffer() *ringBuffer {
+func NewRingBuffer() *RingBuffer {
 	r := ring.New(1)
-	return &ringBuffer{
+	return &RingBuffer{
 		h: r,
 		r: r,
 	}
 }
 
-func (x *ringBuffer) push(v any) {
+func (x *RingBuffer) Push(v any) {
 	x.r.Value = v
 	s := ring.New(1)
 	x.r.Link(s)
 	x.r = s
 }
 
-func (x *ringBuffer) pop() any {
+func (x *RingBuffer) Pop() any {
 	if x.h != x.r {
 		rl := x.r.Unlink(1)
 		// debugf("ring buffer length %d", rl.Len())
@@ -193,55 +208,12 @@ func (x *ringBuffer) pop() any {
 	return nil
 }
 
-func (x *ringBuffer) peek() any {
+func (x *RingBuffer) Peek() any {
 	if x.h != x.r {
 		v := x.h.Value
 		return v
 	}
 	return nil
-}
-
-func (p *Processor[Tdata]) Start(arg ProcessArg) {
-	var (
-		dispatch    func(note any)
-		processNote func()
-	)
-	rb := newRingBuffer()
-	data, cmd := p.Process.Init(arg)
-	sub := p.Process.Subscribe(data)
-	reentered := false
-	state := data
-	activeSubs := []Subedent{}
-	dispatch = func(note any) {
-		rb.push(note)
-		if !reentered {
-			reentered = true
-			processNote()
-			reentered = false
-		}
-	}
-	processNote = func() {
-		nextNote := rb.pop()
-		for {
-			if nextNote == nil {
-				break
-			}
-			note := nextNote
-			data, cmd := p.Process.Update(note, state)
-			sub := p.Process.Subscribe(data)
-			p.Process.PutData(data)
-			execCmd(dispatch, cmd)
-			state = data
-			activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
-			nextNote = rb.pop()
-		}
-	}
-	reentered = true
-	p.Process.PutData(data)
-	execCmd(dispatch, cmd)
-	activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
-	processNote()
-	reentered = false
 }
 
 func (p *Processor[Tdata]) Step(arg ProcessArg) {
@@ -266,65 +238,71 @@ type Process[Tdata any] struct {
 	Subscribe       func(data Tdata) Sub
 }
 
-// // / Trace all the updates to the console
-// // let withConsoleTrace (program: Program<'arg, 'model, 'msg, 'view>) =
-// func WithConsoleLog(p Process) {
-// 	// let traceInit (arg:'arg) =
-// 	traceInit := func(arg) {
-// 		// let initModel,cmd = program.init arg
-// 		initModel, cmd := p.init(arg)
-// 		// Log.toConsole ("Initial state:", initModel)
-// 		toConsole("Initial state: %v", initModel)
-// 		// initModel,cmd
-// 		return initModel, cmd
-// 	}
+// / Trace all the updates to the console
+// let withConsoleTrace (program: Program<'arg, 'model, 'msg, 'view>) =
+func (p *Processor[Tdata]) WithConsoleLog() *Processor[Tdata] {
+	// let traceInit (arg:'arg) =
+	traceInit := func(arg ProcessArg) (Tdata, Cmd) {
+		// let initModel,cmd = program.init arg
+		initData, cmd := p.Process.Init(arg)
+		// Log.toConsole ("Initial state:", initModel)
+		printf("Initial data: %v\n", initData)
+		// initModel,cmd
+		return initData, cmd
+	}
 
-// 	// let traceUpdate msg model =
-// 	traceUpdate := func(msg, model) {
-// 		// Log.toConsole ("New message:", msg)
-// 		toConsole("New message: %v", msg)
-// 		// let newModel,cmd = program.update msg model
-// 		newModel, cmd := program.update(msg, model)
-// 		// Log.toConsole ("Updated state:", newModel)
-// 		toConsole("Updated state: %v", newModel)
-// 		// newModel,cmd
-// 		return newModel, cmd
-// 	}
+	// let traceUpdate msg model =
+	traceUpdate := func(n any, data Tdata) (Tdata, Cmd) {
+		// Log.toConsole ("New message:", msg)
+		printf("New note: %v\n", n)
+		// let newModel,cmd = program.update msg model
+		newData, cmd := p.Process.Update(n, data)
+		// Log.toConsole ("Updated state:", newModel)
+		printf("Updated state: %v\n", newData)
+		// newModel,cmd
+		return newData, cmd
+	}
 
-// 	// let traceSubscribe model =
-// 	traceSubscribe := func(model) {
-// 		// let sub = program.subscribe model
-// 		sub := process.subscribe(model)
-// 		// Log.toConsole ("Updated subs:", sub |> List.map fst)
-// 		toConsole("Updated subs: %v", sub)
-// 		// sub
-// 		return sub
-// 	}
+	// let traceSubscribe model =
+	traceSubscribe := func(data Tdata) Sub {
+		// let sub = program.subscribe model
+		sub := p.Process.Subscribe(data)
+		// Log.toConsole ("Updated subs:", sub |> List.map fst)
+		subId := make([]SubId, 0, len(sub))
+		for _, it := range sub {
+			subId = append(subId, it.SubId)
+		}
+		printf("Updated subs: %v\n", subId)
+		// sub
+		return sub
+	}
 
-// 	return &Process{
-// 		init:            traceInit,
-// 		putData:         p.putData,
-// 		getData:         p.getData,
-// 		getProcessState: p.getProcessState,
-// 		update:          traceUpdate,
-// 		updateWith:      p.updateWith,
-// 		subscribe:       traceSubscribe,
-// 	}
-// }
+	return &Processor[Tdata]{
+		Process: &Process[Tdata]{
+			Init:            traceInit,
+			PutData:         p.Process.PutData,
+			GetData:         p.Process.GetData,
+			GetProcessState: p.Process.GetProcessState,
+			Update:          traceUpdate,
+			UpdateWith:      p.Process.UpdateWith,
+			Subscribe:       traceSubscribe,
+		},
+	}
+}
 
 func (p *Processor[Tdata]) StartWithDispatch(syncDispatch func(d Dispatch) Dispatch, arg ProcessArg) {
 	var (
 		dispatch    func(note any)
 		processNote func()
 	)
-	rb := newRingBuffer()
+	rb := NewRingBuffer()
 	data, cmd := p.Process.Init(arg)
 	sub := p.Process.Subscribe(data)
 	reentered := false
 	state := data
 	activeSubs := []Subedent{}
 	dispatch = func(note any) {
-		rb.push(note)
+		rb.Push(note)
 		if !reentered {
 			reentered = true
 			processNote()
@@ -333,7 +311,7 @@ func (p *Processor[Tdata]) StartWithDispatch(syncDispatch func(d Dispatch) Dispa
 	}
 	dispatch_ := syncDispatch(dispatch)
 	processNote = func() {
-		nextNote := rb.pop()
+		nextNote := rb.Pop()
 		for {
 			if nextNote == nil {
 				break
@@ -345,7 +323,7 @@ func (p *Processor[Tdata]) StartWithDispatch(syncDispatch func(d Dispatch) Dispa
 			execCmd(dispatch_, cmd)
 			state = data
 			activeSubs = changeSubs(dispatch_, diffSubs(activeSubs, sub))
-			nextNote = rb.pop()
+			nextNote = rb.Pop()
 		}
 	}
 	reentered = true
@@ -355,3 +333,53 @@ func (p *Processor[Tdata]) StartWithDispatch(syncDispatch func(d Dispatch) Dispa
 	processNote()
 	reentered = false
 }
+
+func (p *Processor[Tdata]) Start(arg ProcessArg) {
+	id := func(d Dispatch) Dispatch {
+		return d
+	}
+	p.StartWithDispatch(id, arg)
+}
+
+// func (p *Processor[Tdata]) Start(arg ProcessArg) {
+// 	var (
+// 		dispatch    func(note any)
+// 		processNote func()
+// 	)
+// 	rb := NewRingBuffer()
+// 	data, cmd := p.Process.Init(arg)
+// 	sub := p.Process.Subscribe(data)
+// 	reentered := false
+// 	state := data
+// 	activeSubs := []Subedent{}
+// 	dispatch = func(note any) {
+// 		rb.Push(note)
+// 		if !reentered {
+// 			reentered = true
+// 			processNote()
+// 			reentered = false
+// 		}
+// 	}
+// 	processNote = func() {
+// 		nextNote := rb.Pop()
+// 		for {
+// 			if nextNote == nil {
+// 				break
+// 			}
+// 			note := nextNote
+// 			data, cmd := p.Process.Update(note, state)
+// 			sub := p.Process.Subscribe(data)
+// 			p.Process.PutData(data)
+// 			execCmd(dispatch, cmd)
+// 			state = data
+// 			activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
+// 			nextNote = rb.Pop()
+// 		}
+// 	}
+// 	reentered = true
+// 	p.Process.PutData(data)
+// 	execCmd(dispatch, cmd)
+// 	activeSubs = changeSubs(dispatch, diffSubs(activeSubs, sub))
+// 	processNote()
+// 	reentered = false
+// }
