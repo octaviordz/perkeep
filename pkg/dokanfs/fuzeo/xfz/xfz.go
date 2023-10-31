@@ -488,21 +488,16 @@ func makeCreateFileProcess(ctx context.Context) *psor.Processor[*createFileProce
 		cmd = nil
 		switch note.kind {
 		case nkEnqueueReq:
-			fmt.Printf("createFileProcess enqueueReq: %v\n", note.enqueueReq.req)
 			updated.reqR.Push(note.enqueueReq.req)
 			cmd = reqReadyCmd(&updated)
 		case getattrReq:
-			fmt.Printf("createFileProcess getattr (req): %v\n", note.getattr.req)
 			updated.getattrRequest = note.getattr.req
 		case getattrResp:
-			fmt.Printf("createFileProcess getattr (resp): %v\n", note.getattr.resp)
 			updated.getattrResponse = note.getattr.resp
 			cmd = lookupReqCmd(&updated)
 		case lookupReq:
-			fmt.Printf("createFileProcess lookup (req): %v\n", note.lookup.req)
 			updated.lookupRequests = append(updated.lookupRequests, note.lookup.req)
 		case lookupResp:
-			fmt.Printf("createFileProcess lookup (resp): %v\n", note.lookup.resp)
 			fpath := data.directive.fileInfo.Path()
 			parts := strings.Split(fpath, string(filepath.Separator))
 			updated.lookupResponses = append(updated.lookupResponses, note.lookup.resp)
@@ -512,17 +507,13 @@ func makeCreateFileProcess(ctx context.Context) *psor.Processor[*createFileProce
 				cmd = lookupReqCmd(&data)
 			}
 		case accessReq:
-			fmt.Printf("createFileProcess access (req): %v\n", note.access.req)
 			updated.accessRequest = note.access.req
 		case accessResp:
-			fmt.Printf("createFileProcess access (req): %v\n", note.access.req)
 			updated.accessResponse = note.access.resp
 			cmd = openReqCmd(&updated)
 		case openReq:
-			fmt.Printf("createFileProcess open (req): %v\n", note.open.req)
 			updated.openRequest = note.open.req
 		case openResp:
-			fmt.Printf("createFileProcess open (resp): %v\n", note.open.resp)
 			updated.openResponse = note.open.resp
 			updated.processState = processStateSettled
 		}
@@ -549,7 +540,7 @@ func makeCreateFileProcess(ctx context.Context) *psor.Processor[*createFileProce
 	}
 
 	subscribe := func(data *createFileProcessData) psor.Sub {
-		subent := psor.Subent{1, subWith()}
+		subent := psor.Subent{SubId: 1, Subscribe: subWith()}
 		r := []psor.Subent{subent}
 		return r
 	}
@@ -649,7 +640,7 @@ func (x *findFilesProcessData) dequeueReq() Request {
 // https://github.com/dokan-dev/dokany/wiki/FUSE
 // https://github.com/winfsp/winfsp/blob/master/doc/WinFsp-Tutorial.asciidoc#readdirectory
 // FindFiles maps to readdir, and getattr per file/directory.
-func makefindFilesCompound(ctx context.Context) *findFilesCompound {
+func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProcessData] {
 
 	type enqueueReq struct {
 		req Request
@@ -1036,12 +1027,8 @@ func makefindFilesCompound(ctx context.Context) *findFilesCompound {
 		GetProcessState: getProcessState,
 	}
 
-	findFilesProcessor := &psor.Processor[*findFilesProcessData]{
+	return &psor.Processor[*findFilesProcessData]{
 		Process: findFilesProcess,
-	}
-
-	return &findFilesCompound{
-		processor: findFilesProcessor,
 	}
 }
 
@@ -1300,8 +1287,8 @@ const (
 	createFileNoteKindRespBitMask = createFileNoteKind(0b0001_00000000)
 	createFileNoteKindGetattrReq  = createFileNoteKind(opGetattr)
 	createFileNoteKindGetattrResp = createFileNoteKind(createFileNoteKindRespBitMask | opGetattr)
-	createFileNoteKindLookupReq   = findFilesNoteKind(opLookup)
-	createFileNoteKindLookupResp  = findFilesNoteKind(createFileNoteKindRespBitMask | opLookup)
+	createFileNoteKindLookupReq   = createFileNoteKind(opLookup)
+	createFileNoteKindLookupResp  = createFileNoteKind(createFileNoteKindRespBitMask | opLookup)
 	createFileNoteKindAccessReq   = createFileNoteKind(opAccess)
 	createFileNoteKindAccessResp  = createFileNoteKind(createFileNoteKindRespBitMask | opAccess)
 	createFileNoteKindOpenReq     = createFileNoteKind(opOpen) // opOpendir
@@ -1636,7 +1623,7 @@ type FindFilesDirective struct {
 	file             dokan.File
 	Pattern          string
 	FillStatCallback func(*dokan.NamedStat) error
-	compound         *findFilesCompound
+	processor        *psor.Processor[*findFilesProcessData]
 }
 
 var _ Directive = (*FindFilesDirective)(nil)
@@ -1653,30 +1640,47 @@ func (d *FindFilesDirective) putDirectiveId(id DirectiveID) {
 func (d *FindFilesDirective) startProcessor() {
 	// processor := d.compound.processor.WithConsoleLog()
 	// processor.Start(d)
-	d.compound.processor.Start(d)
+	d.processor.Start(d)
 }
 
 func (d *FindFilesDirective) nextReq() Request {
-	return d.compound.nextReq()
+	data := d.processor.Fetch()
+	req := data.reqR.Pop().(Request)
+	return req
 }
 
 func (d *FindFilesDirective) putResp(r Response) {
-	d.compound.putResp(r)
+	d.processor.Step(r)
 }
 
 func (d *FindFilesDirective) isComplete() bool {
-	return d.compound.isComplete()
+	return d.processor.State() == processStateSettled
+}
+
+func (d *FindFilesDirective) getReadResponse() *ReadResponse {
+	data := d.processor.Fetch()
+	return data.readResponse
+}
+
+func (d *FindFilesDirective) getGetattrResponseByInode(inode uint64) *LookupResponse {
+	data := d.processor.Fetch()
+	for _, resp := range data.lookupResponses {
+		if resp.Attr.Inode == inode {
+			return resp
+		}
+	}
+	return nil
 }
 
 func (d *FindFilesDirective) answer() Answer {
 	// p := FindFilesProduct{}
 	// arg:= {directive: d}
 	// Products.perform(arg, p)
-	if !d.compound.isComplete() {
+	if !d.isComplete() {
 		// No complete answer to post.
 		return nil
 	}
-	readResp := d.compound.getReadResponse()
+	readResp := d.getReadResponse()
 	a := &FindFilesAnswer{
 		answerHeader: mkAnswerHeader(readResp),
 		Items:        make([]dokan.NamedStat, len(readResp.Entries)),
@@ -1686,7 +1690,7 @@ func (d *FindFilesDirective) answer() Answer {
 		Stat: dokan.Stat{},
 	}
 	for _, it := range readResp.Entries {
-		attrResp := d.compound.getGetattrResponseByInode(it.Inode)
+		attrResp := d.getGetattrResponseByInode(it.Inode)
 		if attrResp == nil {
 			continue
 		}
@@ -1713,9 +1717,8 @@ func (d *FindFilesDirective) String() string {
 	return fmt.Sprintf("FindFilesDirective [%s] file.handle=%v", d.Hdr(), f.handle)
 }
 
-func (d *FindFilesDirective) IsDirectiveType()      {}
-func (d *FindFilesDirective) getCompound() compound { return d.compound }
-func (d *FindFilesDirective) IsProcessArg()         {}
+func (d *FindFilesDirective) IsDirectiveType() {}
+func (d *FindFilesDirective) IsProcessArg()    {}
 
 type FindFilesAnswer struct {
 	answerHeader
