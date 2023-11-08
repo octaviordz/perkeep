@@ -18,7 +18,7 @@ func TestCreateFileProcessOpendir(t *testing.T) {
 		CreateOptions:     0b100000000000000000100001,
 	}
 
-	fi := &fileInfoImp{path: filepath.Join("home", "user", "pk")}
+	fi := &fileInfoImp{path: filepath.Join("root", "pk", "folder")}
 	directive := &CreateFileDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
@@ -75,4 +75,76 @@ func TestCreateFileProcessOpendir(t *testing.T) {
 
 	resp = &OpenResponse{}
 	p.Step(resp)
+
+	if directive.isComplete() == true {
+		t.Errorf("isComplete() Expected true, but got %v", directive.isComplete())
+	}
+}
+
+func TestFindFilesProcess(t *testing.T) {
+	ctx := context.Background()
+	fi := &fileInfoImp{path: filepath.Join("root", "pk", "folder")}
+	var f emptyFile
+	directive := &FindFilesDirective{
+		directiveHeader: directiveHeader{
+			fileInfo: fi,
+			node:     supplyNodeIdWithPath(fi.Path()),
+		},
+		file:             f,
+		Pattern:          "",
+		FillStatCallback: nil, //fillStatCallback,
+		processor:        makefindFilesProcessor(ctx),
+	}
+
+	processor := directive.processor
+	if processor.Fetch() != nil {
+		t.Errorf("Expected <nil>, but got %v", processor.Fetch())
+	}
+
+	p := processor
+	p.Start(directive)
+	if p.Fetch().directive == nil {
+		t.Errorf("Expected %v, but got %v", directive, processor.Fetch().directive)
+	}
+	var resp Response
+
+	r0 := p.Fetch().reqR.Pop().(*LookupRequest)
+	t.Logf("LookupRequest %v", r0)
+
+	resp = &LookupResponse{}
+	p.Step(resp)
+
+	r1 := p.Fetch().reqR.Pop().(*LookupRequest)
+	t.Logf("LookupRequest %v", r1)
+
+	resp = &LookupResponse{}
+	p.Step(resp)
+
+	r2 := p.Fetch().reqR.Pop().(*LookupRequest)
+	t.Logf("LookupRequest %v", r2)
+
+	resp = &LookupResponse{}
+	p.Step(resp)
+
+	r3 := p.Fetch().reqR.Pop().(*OpenRequest)
+	t.Logf("OpenRequest %v", r3)
+
+	resp = &OpenResponse{}
+	p.Step(resp)
+
+	r4 := p.Fetch().reqR.Pop().(*ReadRequest)
+	t.Logf("ReadRequest %v", r4)
+
+	resp = &AccessResponse{}
+	p.Step(resp)
+
+	r5 := p.Fetch().reqR.Pop().(*GetattrRequest)
+	t.Logf("GetattrRequest %v", r5)
+
+	resp = &GetattrResponse{}
+	p.Step(resp)
+
+	if directive.isComplete() == true {
+		t.Errorf("isComplete() Expected true, but got %v", directive.isComplete())
+	}
 }
