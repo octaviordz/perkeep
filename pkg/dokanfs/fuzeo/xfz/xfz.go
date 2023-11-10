@@ -237,9 +237,15 @@ func makeHeaderWith(node NodeID, directive Directive) Header {
 	}
 }
 
-func makeHeaderWithDirective(directive Directive) Header {
-	h := directive.Hdr()
-	return makeHeaderWith(h.node, directive)
+func filepathSplit(path string) []string {
+	parts := strings.Split(path, string(filepath.Separator))
+	parts_ := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			parts_ = append(parts_, part)
+		}
+	}
+	return parts_
 }
 
 const maxRead = 128 * 1024
@@ -307,8 +313,9 @@ func makeCreateFileProcess(ctx context.Context) *psor.Processor[*createFileProce
 	init := func(arg psor.ProcessArg) (data *createFileProcessData, cmd psor.Cmd) {
 		switch d := arg.(type) {
 		case *CreateFileDirective:
+			node := supplyNodeIdWithPath(d.fileInfo.Path())
 			req := &GetattrRequest{
-				Header: makeHeaderWithDirective(d),
+				Header: makeHeaderWith(node, d),
 				Handle: HandleID(0),
 				Flags:  0,
 			}
@@ -605,21 +612,23 @@ const (
 )
 
 type findFilesProcessData struct {
-	processState    psor.ProcessState
-	directive       *FindFilesDirective
-	accessRequest   *AccessRequest
-	accessResponse  *AccessResponse
-	openRequest     *OpenRequest
-	openResponse    *OpenResponse
-	getattrRequest  *GetattrRequest
-	getattrResponse *GetattrResponse
-	readRequest     *ReadRequest
-	readResponse    *ReadResponse
-	lookupRequests  []*LookupRequest
-	lookupResponses []*LookupResponse
-	releaseRequest  *ReleaseRequest
-	releaseResponse *ReleaseResponse
-	reqR            *psor.RingBuffer
+	processState        psor.ProcessState
+	directive           *FindFilesDirective
+	accessRequest       *AccessRequest
+	accessResponse      *AccessResponse
+	openRequest         *OpenRequest
+	openResponse        *OpenResponse
+	getattrRequest      *GetattrRequest
+	getattrResponse     *GetattrResponse
+	readRequest         *ReadRequest
+	readResponse        *ReadResponse
+	pathLookupRequests  []*LookupRequest
+	pathLookupResponses []*LookupResponse
+	lookupRequests      []*LookupRequest
+	lookupResponses     []*LookupResponse
+	getattrRequests     []*GetattrRequest
+	getattrResponses    []*GetattrResponse
+	reqR                *psor.RingBuffer
 }
 
 func (x *findFilesProcessData) dequeueReq() Request {
@@ -708,9 +717,14 @@ func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProce
 	init := func(arg psor.ProcessArg) (data *findFilesProcessData, cmd psor.Cmd) {
 		switch d := arg.(type) {
 		case *FindFilesDirective:
-			accessRequest := &AccessRequest{
-				Header: makeHeaderWithDirective(d),
-				Mask:   0x1,
+			fpath := d.fileInfo.Path()
+			parts := filepathSplit(fpath)
+			dname := parts[0]
+			path := string(filepath.Separator)
+			node := supplyNodeIdWithPath(path)
+			lookupRequest := &LookupRequest{
+				Header: makeHeaderWith(node, d),
+				Name:   dname,
 			}
 			data = &findFilesProcessData{
 				processState: processStatePending,
@@ -719,11 +733,11 @@ func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProce
 			}
 			// Set and enqueue request.
 			cmd = psor.BatchCmd([]psor.Cmd{
-				psor.CmdOfNote(note{kind: accessReq,
-					access: &access{req: accessRequest},
+				psor.CmdOfNote(note{kind: lookupReq,
+					lookup: &lookup{req: lookupRequest},
 				}),
 				psor.CmdOfNote(note{kind: nkEnqueueReq,
-					enqueueReq: &enqueueReq{req: accessRequest},
+					enqueueReq: &enqueueReq{req: lookupRequest},
 				}),
 			})
 		}
@@ -755,7 +769,7 @@ func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProce
 			}
 		case *OpenResponse:
 			r = note{
-				kind: findFilesNoteKindOpenReq,
+				kind: findFilesNoteKindOpenResp,
 				open: &open{
 					resp: arg,
 				},
@@ -809,9 +823,10 @@ func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProce
 	readdirReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
 		fxi := func(dispatch psor.Dispatch) {
+			node := supplyNodeIdWithPath(d.fileInfo.Path())
 			handle := data.openResponse.Handle
 			readRequest := &ReadRequest{
-				Header:    makeHeaderWithDirective(d),
+				Header:    makeHeaderWith(node, d),
 				Dir:       true,
 				Handle:    handle,
 				Offset:    0,
@@ -848,35 +863,37 @@ func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProce
 		})
 	}
 
-	getattrReqCmd := func(data *findFilesProcessData) psor.Cmd {
-		d := data.directive
-		fPath := d.fileInfo.Path()
-		node := supplyNodeIdWithPath(fPath)
-		req := &GetattrRequest{
-			Header: makeHeaderWith(node, d),
-			Handle: HandleID(0),
-			Flags:  0,
-		}
-		// Set and enqueue request
-		return psor.BatchCmd([]psor.Cmd{
-			psor.CmdOfNote(note{kind: getattrReq,
-				getattr: &getattr{req: req},
-			}),
-			psor.CmdOfNote(note{kind: nkEnqueueReq,
-				enqueueReq: &enqueueReq{req: req},
-			}),
-		})
-	}
+	// getattrReqRootCmd := func(data *findFilesProcessData) psor.Cmd {
+	// 	d := data.directive
+	// 	fPath := d.fileInfo.Path()
+	// 	node := supplyNodeIdWithPath(fPath)
+	// 	req := &GetattrRequest{
+	// 		Header: makeHeaderWith(node, d),
+	// 		Handle: HandleID(0),
+	// 		Flags:  0,
+	// 	}
+	// 	// Set and enqueue request
+	// 	return psor.BatchCmd([]psor.Cmd{
+	// 		psor.CmdOfNote(note{kind: getattrReq,
+	// 			getattr: &getattr{req: req},
+	// 		}),
+	// 		psor.CmdOfNote(note{kind: nkEnqueueReq,
+	// 			enqueueReq: &enqueueReq{req: req},
+	// 		}),
+	// 	})
+	// }
 
-	lookupReqCmd := func(data *findFilesProcessData) psor.Cmd {
+	pathLookupReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
-		idx := len(data.lookupRequests)
-		dirent := data.readResponse.Entries[idx]
-		fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
-		node := supplyNodeIdWithPath(fPath)
+		fpath := d.fileInfo.Path()
+		idx := len(data.pathLookupRequests)
+		parts := filepathSplit(fpath)
+		dname := parts[idx]
+		path := filepath.Join(string(filepath.Separator), filepath.Join(parts[:idx]...))
+		node := supplyNodeIdWithPath(path)
 		req := &LookupRequest{
 			Header: makeHeaderWith(node, d),
-			Name:   dirent.Name,
+			Name:   dname,
 		}
 		// Set and enqueue request
 		return psor.BatchCmd([]psor.Cmd{
@@ -889,20 +906,26 @@ func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProce
 		})
 	}
 
-	releaseReqCmd := func(data *findFilesProcessData) psor.Cmd {
+	getattrReqCmd := func(data *findFilesProcessData) psor.Cmd {
 		d := data.directive
-		openReq := data.openRequest
-		handle := data.openResponse.Handle
-		req := &ReleaseRequest{
-			Header: makeHeaderWithDirective(d),
-			Dir:    openReq.Dir,
-			Handle: handle,
-			Flags:  openReq.Flags,
+		idx := len(data.getattrRequests)
+		dirent := data.readResponse.Entries[idx]
+		fPath := filepath.Join(d.fileInfo.Path(), dirent.Name)
+		node := supplyNodeIdWithPath(fPath)
+		req := &GetattrRequest{
+			Header: makeHeaderWith(node, d),
+			Handle: HandleID(0),
+			Flags:  0,
 		}
+		// req := &GetattrRequest{
+		// 	Header: makeHeaderWith(node, d),
+		// 	Handle: handle,
+		// 	Flags:  GetattrFh,
+		// }
 		// Set and enqueue request
 		return psor.BatchCmd([]psor.Cmd{
-			psor.CmdOfNote(note{kind: releaseReq,
-				release: &release{req: req},
+			psor.CmdOfNote(note{kind: getattrReq,
+				getattr: &getattr{req: req},
 			}),
 			psor.CmdOfNote(note{kind: nkEnqueueReq,
 				enqueueReq: &enqueueReq{req: req},
@@ -915,55 +938,39 @@ func makefindFilesProcessor(ctx context.Context) *psor.Processor[*findFilesProce
 		cmd = nil
 		switch note.kind {
 		case nkEnqueueReq:
-			fmt.Printf("findFilesProcess enqueueReq: %v\n", note.enqueueReq.req)
 			updated.reqR.Push(note.enqueueReq.req)
 			cmd = reqReadyCmd(&updated)
-		case accessReq:
-			fmt.Printf("findFilesProcess access (req): %v\n", note.access.req)
-			updated.accessRequest = note.access.req
-		case accessResp:
-			fmt.Printf("findFilesProcess access (req): %v\n", note.access.req)
-			updated.accessResponse = note.access.resp
-			cmd = openReqCmd(&updated)
+		case lookupReq:
+			updated.pathLookupRequests = append(updated.pathLookupRequests, note.lookup.req)
+		case lookupResp:
+			updated.pathLookupResponses = append(updated.pathLookupResponses, note.lookup.resp)
+			fpath := data.directive.fileInfo.Path()
+			parts := filepathSplit(fpath)
+			if len(updated.pathLookupResponses) == len(parts) {
+				cmd = openReqCmd(&updated)
+			} else {
+				cmd = pathLookupReqCmd(&data)
+			}
+		// case accessReq:
+		// 	updated.accessRequest = note.access.req
+		// case accessResp:
+		// 	updated.accessResponse = note.access.resp
+		// 	cmd = openReqCmd(&updated)
 		case openReq:
-			fmt.Printf("findFilesProcess open (req): %v\n", note.open.req)
 			updated.openRequest = note.open.req
 		case openResp:
-			fmt.Printf("findFilesProcess open (resp): %v\n", note.open.resp)
 			updated.openResponse = note.open.resp
-			cmd = getattrReqCmd(&updated)
-		case getattrReq:
-			fmt.Printf("findFilesProcess getattr (req): %v\n", note.getattr.req)
-			updated.getattrRequest = note.getattr.req
-		case getattrResp:
-			fmt.Printf("findFilesProcess getattr (resp): %v\n", note.getattr.resp)
-			updated.getattrResponse = note.getattr.resp
 			cmd = readdirReqCmd(&updated)
 		case readdirReq:
-			fmt.Printf("findFilesProcess readdir (req): %v\n", note.readdir.req)
 			updated.readRequest = note.readdir.req
 		case readdirResp:
-			fmt.Printf("findFilesProcess readdir (resp): %v\n", note.readdir.resp)
 			updated.readResponse = note.readdir.resp
-			cmd = lookupReqCmd(&updated)
-		case lookupReq:
-			fmt.Printf("findFilesProcess lookup (req): %v\n", note.lookup.req)
-			updated.lookupRequests = append(updated.lookupRequests, note.lookup.req)
-		case lookupResp:
-			fmt.Printf("findFilesProcess lookup (resp): %v\n", note.lookup.resp)
-			updated.lookupResponses = append(updated.lookupResponses, note.lookup.resp)
-			if len(data.lookupResponses) == len(data.readResponse.Entries) {
-				cmd = releaseReqCmd(&data)
-			} else {
-				cmd = lookupReqCmd(&data)
-			}
-		case releaseReq:
-			fmt.Printf("findFilesProcess lookup (resp): %v\n", note.release.req)
-			updated.releaseRequest = note.release.req
-		case releaseResp:
-			fmt.Printf("findFilesProcess lookup (resp): %v\n", note.release.resp)
-			updated.releaseResponse = note.release.resp
-			updated.processState = processStateSettled
+			cmd = getattrReqCmd(&updated)
+		case getattrReq:
+			updated.getattrRequest = note.getattr.req
+		case getattrResp:
+			updated.getattrResponse = note.getattr.resp
+			cmd = getattrReqCmd(&updated)
 		}
 		return
 	}
@@ -1177,7 +1184,6 @@ func (fi *fileInfoImp) NumberOfFileHandles() uint32 { return 0 }
 type directiveHeader struct {
 	id       DirectiveID // unique ID for directive
 	fileInfo fileInfo    // file or directory the request is about
-	node     NodeID      // file or directory the request is about
 }
 
 type answerHeader struct {
@@ -1444,6 +1450,7 @@ func (d *CreateFileDirective) makeRequest() Request {
 	// fuse_operations::open
 	// fuse_operations::mkdir
 	// fuse_operations::opendir
+	node := supplyNodeIdWithPath(d.fileInfo.Path())
 	cd := d.CreateData
 	fmt.Printf("FileInfo %v\n", d.Hdr().fileInfo)
 	fmt.Printf("FileInfo Path %v\n", d.Hdr().fileInfo.Path())
@@ -1515,7 +1522,7 @@ func (d *CreateFileDirective) makeRequest() Request {
 		// fuse_operations::opendir
 
 		req := &OpenRequest{
-			Header: makeHeaderWithDirective(d),
+			Header: makeHeaderWith(node, d),
 			// Dir:    m.hdr.Opcode == opOpendir,
 			Dir: cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory,
 			// Flags:  openFlags(in.Flags),
@@ -1529,7 +1536,7 @@ func (d *CreateFileDirective) makeRequest() Request {
 		// r.FileInfo = req.FileInfo
 		// r.CreateData = req.CreateData
 		req := &OpenRequest{
-			Header:    makeHeaderWithDirective(d),
+			Header:    makeHeaderWith(node, d),
 			Dir:       isDir,
 			Flags:     OpenDirectory,
 			OpenFlags: OpenRequestFlags(0),
@@ -1745,6 +1752,7 @@ func (r *GetFileInformationDirective) putDirectiveId(id DirectiveID) { r.id = id
 func (d *GetFileInformationDirective) startProcessor()               {}
 
 func (d *GetFileInformationDirective) nextReq() (req Request) {
+	node := supplyNodeIdWithPath(d.fileInfo.Path())
 	handles := retsm.getHandleByPath(d.fileInfo.Path())
 	if len(handles) <= 0 {
 		debugf("ReadRequest len(handles) <= 0; %v", handles)
@@ -1755,7 +1763,7 @@ func (d *GetFileInformationDirective) nextReq() (req Request) {
 	handle := file.handle
 	debug("ReadRequest fuse_operations::getattr")
 	req = &GetattrRequest{
-		Header: makeHeaderWithDirective(d),
+		Header: makeHeaderWith(node, d),
 		Handle: handle,
 		Flags:  GetattrFh,
 	}

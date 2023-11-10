@@ -22,7 +22,6 @@ func TestCreateFileProcessOpendir(t *testing.T) {
 	directive := &CreateFileDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
-			node:     supplyNodeIdWithPath(fi.Path()),
 		},
 		CreateData: cd,
 		processor:  makeCreateFileProcess(ctx),
@@ -81,6 +80,44 @@ func TestCreateFileProcessOpendir(t *testing.T) {
 	}
 }
 
+func reverseSlice(data []string) []string {
+	for i := len(data)/2 - 1; i >= 0; i-- {
+		opp := len(data) - 1 - i
+		data[i], data[opp] = data[opp], data[i]
+	}
+	return data
+}
+
+func filepathSplit_(path string) []string {
+	parts := make([]string, 0, 10)
+	path_ := path
+	for {
+		lastBase := filepath.Base(path_)
+		path_ = filepath.Dir(path_)
+		if lastBase == path_ {
+			break
+		}
+		parts = append(parts, lastBase)
+	}
+	return reverseSlice(parts)
+}
+
+func TestGoi(t *testing.T) {
+	// tedigita
+	idx := 1
+	// fpath := filepath.Join("pk")
+	// fpath := "\\\\"
+	// fpath := "\\Users\\pk\\folder"
+	fpath := filepath.Join(string(filepath.Separator), "root", "pk")
+	t.Logf("fpath %v", fpath)
+	parts := filepathSplit(fpath)
+	t.Logf("parts %v len(parts) %v", parts, len(parts))
+	dname := parts[idx]
+	path := filepath.Join(string(filepath.Separator), filepath.Join(parts[:idx]...))
+	t.Logf("dname %v", dname)
+	t.Logf("path %v", path)
+}
+
 func TestFindFilesProcess(t *testing.T) {
 	ctx := context.Background()
 	fi := &fileInfoImp{path: filepath.Join("root", "pk", "folder")}
@@ -88,7 +125,6 @@ func TestFindFilesProcess(t *testing.T) {
 	directive := &FindFilesDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
-			node:     supplyNodeIdWithPath(fi.Path()),
 		},
 		file:             f,
 		Pattern:          "",
@@ -135,7 +171,16 @@ func TestFindFilesProcess(t *testing.T) {
 	r4 := p.Fetch().reqR.Pop().(*ReadRequest)
 	t.Logf("ReadRequest %v", r4)
 
-	resp = &AccessResponse{}
+	dirents := []Dirent{
+		{
+			Inode: 10,
+			Type:  DirentType(DT_File),
+			Name:  "WELCOME.txt",
+		},
+	}
+	resp = &ReadResponse{
+		Entries: dirents,
+	}
 	p.Step(resp)
 
 	r5 := p.Fetch().reqR.Pop().(*GetattrRequest)
