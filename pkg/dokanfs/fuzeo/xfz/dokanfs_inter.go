@@ -49,6 +49,14 @@ func (t fileSystemInter) Printf(string, ...interface{}) {
 
 func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd *dokan.CreateData) (dokan.File, dokan.CreateStatus, error) {
 	debug("RFS.CreateFile")
+	// Forcing readonly.
+	// TODO(OR): ENOENT: No such file or directory when trying to desktop.ini
+	if cd.FileAttributes&dokan.FileAttributeDirectory == dokan.FileAttributeDirectory &&
+		cd.CreateDisposition&dokan.FileCreate == dokan.FileCreate {
+
+		return emptyFile{}, dokan.CreateStatus(dokan.ErrAccessDenied), nil
+	}
+
 	directive := &CreateFileDirective{
 		directiveHeader: directiveHeader{
 			fileInfo: fi,
@@ -90,7 +98,7 @@ func (t fileSystemInter) CreateFile(ctx context.Context, fi *dokan.FileInfo, cd 
 	//TODO(ORC): Process answer.
 	answer, err := diesm.PostDirective(ctx, directive)
 	if err != nil {
-		debug(answer)
+		debugf("Error: %v answer: %v", err, answer)
 		return nil, dokan.CreateStatus(dokan.ErrNotSupported), err
 	}
 	a := answer.(*CreateFileAnswer)

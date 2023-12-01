@@ -414,23 +414,11 @@ func makeCreateFileProcess(ctx context.Context) *psor.Processor[*createFileProce
 	}
 
 	// Lookup for each part/section of path
-	// initLookupCmd := func(data *createFileProcessData) psor.Cmd {
-	// 	d := data.directive
-	// 	fpath := d.fileInfo.Path()
-	// 	parts := strings.Split(fpath, string(filepath.Separator))
-	// 	fPathPartLen := len(parts)
-	// 	node := supplyNodeIdWithPath(fPath)
-	// 	return psor.CmdOfNote(note{kind: initLookup,
-	// 			initLookup: &initLookup{req: fPathPartLen},
-	// 	})
-	// }
-
-	// Lookup for each part/section of path
 	lookupReqCmd := func(data *createFileProcessData) psor.Cmd {
 		d := data.directive
 		idx := len(data.lookupRequests)
 		fPath := d.fileInfo.Path()
-		parts := strings.Split(fPath, string(filepath.Separator))
+		parts := filepathSplit(fPath)
 		name := parts[idx]
 		nPath := filepath.Join(fPath, name)
 		node := supplyNodeIdWithPath(nPath)
@@ -501,17 +489,23 @@ func makeCreateFileProcess(ctx context.Context) *psor.Processor[*createFileProce
 			updated.getattrRequest = note.getattr.req
 		case getattrResp:
 			updated.getattrResponse = note.getattr.resp
-			cmd = lookupReqCmd(&updated)
+			fpath := data.directive.fileInfo.Path()
+			parts := filepathSplit(fpath)
+			if len(updated.lookupResponses) >= len(parts) {
+				cmd = accessReqCmd(&updated)
+			} else {
+				cmd = lookupReqCmd(&updated)
+			}
 		case lookupReq:
 			updated.lookupRequests = append(updated.lookupRequests, note.lookup.req)
 		case lookupResp:
 			fpath := data.directive.fileInfo.Path()
-			parts := strings.Split(fpath, string(filepath.Separator))
+			parts := filepathSplit(fpath)
 			updated.lookupResponses = append(updated.lookupResponses, note.lookup.resp)
 			if len(updated.lookupResponses) >= len(parts) {
-				cmd = accessReqCmd(&data)
+				cmd = accessReqCmd(&updated)
 			} else {
-				cmd = lookupReqCmd(&data)
+				cmd = lookupReqCmd(&updated)
 			}
 		case accessReq:
 			updated.accessRequest = note.access.req
@@ -1392,31 +1386,36 @@ func (d *CreateFileDirective) putResp(resp Response) {
 	// OpenKeepCache   OpenResponseFlags = 1 << 1 // don't invalidate the data cache on open
 	// OpenNonSeekable OpenResponseFlags = 1 << 2 // mark the file as non-seekable (not supported on FreeBSD)
 	// OpenCacheDir    OpenResponseFlags = 1 << 3 // allow caching directory contents
+	processor := d.processor
+	p := processor
+	p.Step(resp)
 
-	switch r := (resp).(type) {
-	case *OpenResponse:
-		// Need to get the request to know if it's open or opendir?
-		// id := r.GetId()
-		// directive := diesm.getDirective(DirectiveID(id))
-		// d := directive.(*CreateFileDirective)
-		createStatus := dokan.ExistingFile
-		isDir := fileInfos.isDirWithFileInfo(d.fileInfo)
-		if isDir {
-			debugf("WriteRespond fuse_operations::opendir")
-			createStatus = dokan.ExistingDir
-		} else {
-			debugf("WriteRespond fuse_operations::open")
-		}
-		file := makeFileWithHandle(r.Handle)
+	if d.isComplete() {
+		switch r := (resp).(type) {
+		case *OpenResponse:
+			// Need to get the request to know if it's open or opendir?
+			// id := r.GetId()
+			// directive := diesm.getDirective(DirectiveID(id))
+			// d := directive.(*CreateFileDirective)
+			createStatus := dokan.ExistingFile
+			isDir := fileInfos.isDirWithFileInfo(d.fileInfo)
+			if isDir {
+				debugf("WriteRespond fuse_operations::opendir")
+				createStatus = dokan.ExistingDir
+			} else {
+				debugf("WriteRespond fuse_operations::open")
+			}
+			file := makeFileWithHandle(r.Handle)
 
-		// dokan.CreateStatus(dokan.ErrAccessDenied)
-		if r.Handle != 0 {
-			retsm.saveHandle(r.Handle, d.fileInfo.Path(), file)
-		}
-		d.a = &CreateFileAnswer{
-			answerHeader: mkAnswerHeader(r),
-			File:         file,
-			CreateStatus: createStatus,
+			// dokan.CreateStatus(dokan.ErrAccessDenied)
+			if r.Handle != 0 {
+				retsm.saveHandle(r.Handle, d.fileInfo.Path(), file)
+			}
+			d.a = &CreateFileAnswer{
+				answerHeader: mkAnswerHeader(r),
+				File:         file,
+				CreateStatus: createStatus,
+			}
 		}
 	}
 }

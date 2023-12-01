@@ -1083,9 +1083,6 @@ type Header struct {
 	Uid  uint32    // user ID of process making request
 	Gid  uint32    // group ID of process making request
 	Pid  uint32    // process ID of process making request
-
-	// for returning to reqPool
-	// msg *message
 }
 
 func (h *Header) String() string {
