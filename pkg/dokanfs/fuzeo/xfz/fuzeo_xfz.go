@@ -1083,9 +1083,6 @@ type Header struct {
 	Uid  uint32    // user ID of process making request
 	Gid  uint32    // group ID of process making request
 	Pid  uint32    // process ID of process making request
-
-	// for returning to reqPool
-	// msg *message
 }
 
 func (h *Header) String() string {
@@ -2403,6 +2400,10 @@ func (r *FlushRequest) String() string {
 func (r *FlushRequest) Respond() {
 	// buf := newBuffer(0)
 	// r.respond(buf)
+}
+
+type FlushResponse struct {
+	ResponseHeader
 }
 
 // A RemoveRequest asks to remove a file or directory from the
