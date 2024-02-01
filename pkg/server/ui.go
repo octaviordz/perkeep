@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	closurestatic "perkeep.org/clients/web/embed/closure/lib"
 	fontawesomestatic "perkeep.org/clients/web/embed/fontawesome"
 	keepystatic "perkeep.org/clients/web/embed/keepy"
 	leafletstatic "perkeep.org/clients/web/embed/leaflet"
@@ -53,7 +54,6 @@ import (
 	"perkeep.org/pkg/sorted"
 	"perkeep.org/pkg/types/camtypes"
 	uistatic "perkeep.org/server/perkeepd/ui"
-	closurestatic "perkeep.org/server/perkeepd/ui/closure"
 	"rsc.io/qr"
 )
 
@@ -62,7 +62,7 @@ var (
 	identOrDotPattern  = regexp.MustCompile(`^[a-zA-Z\_]+(\.[a-zA-Z\_]+)*$`)
 	thumbnailPattern   = regexp.MustCompile(`^thumbnail/([^/]+)(/.*)?$`)
 	treePattern        = regexp.MustCompile(`^tree/([^/]+)(/.*)?$`)
-	closurePattern     = regexp.MustCompile(`^closure/(([^/]+)(/.*)?)$`)
+	closurePattern     = regexp.MustCompile(`^(closure/([^/]+)(/.*)?)$`)
 	lessPattern        = regexp.MustCompile(`^less/(.+)$`)
 	reactPattern       = regexp.MustCompile(`^react/(.+)$`)
 	leafletPattern     = regexp.MustCompile(`^leaflet/(.+)$`)
@@ -173,28 +173,15 @@ func uiFromConfig(ld blobserver.Loader, conf jsonconfig.Obj) (h http.Handler, er
 
 	if ui.sourceRoot == "" {
 		ui.sourceRoot = os.Getenv("CAMLI_DEV_CAMLI_ROOT")
-		if uistatic.IsAppEngine {
-			if _, err = os.Stat(filepath.Join(uistatic.GaeSourceRoot,
-				filepath.FromSlash("server/perkeepd/ui/index.html"))); err != nil {
-				hint := fmt.Sprintf("\"sourceRoot\" was not specified in the config,"+
-					" and the default sourceRoot dir %v does not exist or does not contain"+
-					" \"server/perkeepd/ui/index.html\". devcam appengine can do that for you.",
-					uistatic.GaeSourceRoot)
-				log.Print(hint)
-				return nil, errors.New("no sourceRoot found; UI not available")
-			}
-			log.Printf("Using the default \"%v\" as the sourceRoot for AppEngine", uistatic.GaeSourceRoot)
-			ui.sourceRoot = uistatic.GaeSourceRoot
-		}
 		if ui.sourceRoot == "" {
 			files, err := uistatic.Files.ReadDir(".")
 			if err != nil {
 				return nil, fmt.Errorf("Could not read static files: %v", err)
 			}
 			if len(files) == 0 {
-				ui.sourceRoot, err = osutil.GoPackagePath("perkeep.org")
+				ui.sourceRoot, err = osutil.PkSourceRoot()
 				if err != nil {
-					log.Printf("Warning: server not compiled with linked-in UI resources (HTML, JS, CSS), and perkeep.org not found in GOPATH.")
+					log.Printf("Warning: server not compiled with linked-in UI resources (HTML, JS, CSS), and source root folder not found: %v", err)
 				} else {
 					log.Printf("Using UI resources (HTML, JS, CSS) from disk, under %v", ui.sourceRoot)
 				}
@@ -357,16 +344,9 @@ func makeClosureHandler(root, handlerName string) (http.Handler, error) {
 		return http.FileServer(http.Dir(d)), nil
 	}
 	if root == "" {
-		fs, err := closurestatic.FileSystem()
-		if err == os.ErrNotExist {
-			log.Printf("%v: no configured setting or embedded resources; serving Closure via %v", handlerName, closureBaseURL)
-			return closureBaseURL, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("error loading embedded Closure zip file: %v", err)
-		}
+		fs := closurestatic.Closure
 		log.Printf("%v: serving Closure from embedded resources", handlerName)
-		return http.FileServer(fs), nil
+		return http.FileServer(http.FS(fs)), nil
 	}
 	if strings.HasPrefix(root, "http") {
 		log.Printf("%v: serving Closure using redirects to %v", handlerName, root)
@@ -392,8 +372,6 @@ func makeFileServer(sourceRoot string, pathToServe string, expectedContentPath s
 	}
 	return http.FileServer(http.Dir(dirToServe)), nil
 }
-
-const closureBaseURL closureRedirector = "https://closure-library.googlecode.com/git"
 
 // closureRedirector is a hack to redirect requests for Closure's million *.js files
 // to https://closure-library.googlecode.com/git.
@@ -650,7 +628,8 @@ func (ui *UIHandler) serveClosure(rw http.ResponseWriter, req *http.Request) {
 }
 
 // serveFromDiskOrStatic matches rx against req's path and serves the match either from disk (if non-nil) or from static (embedded in the binary).
-func (ui *UIHandler) serveFromDiskOrStatic(rw http.ResponseWriter, req *http.Request, rx *regexp.Regexp, disk http.Handler, static fs.FS) {
+func (ui *UIHandler) serveFromDiskOrStatic(rw http.ResponseWriter, req *http.Request, rx *regexp.Regexp,
+	disk http.Handler, static fs.FS) {
 	suffix := httputil.PathSuffix(req)
 	m := rx.FindStringSubmatch(suffix)
 	if m == nil {

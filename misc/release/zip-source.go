@@ -1,5 +1,4 @@
 //go:build ignore
-// +build ignore
 
 /*
 Copyright 2016 The Perkeep Authors
@@ -251,7 +250,6 @@ func checkBuild() {
 	}
 	check(os.Chdir(tarballSrc))
 	check(os.Setenv("PATH", os.Getenv("PATH")+":/usr/local/go/bin/"))
-	check(os.Setenv("CAMLI_GOPHERJS_GOROOT", "/usr/local/go"))
 	check(os.Setenv("GOPATH", *flagOutDir))
 	cmd := exec.Command("go", "run", "make.go")
 	cmd.Stdout = os.Stdout

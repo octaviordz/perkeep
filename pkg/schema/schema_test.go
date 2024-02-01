@@ -228,7 +228,7 @@ func TestBlobFromReader(t *testing.T) {
 		t.Errorf("got type %q; want foo", blob.Type())
 	}
 
-	blob, err = BlobFromReader(br, strings.NewReader(`{"camliVersion": 1, "camliType": "foo"}  X  `))
+	_, err = BlobFromReader(br, strings.NewReader(`{"camliVersion": 1, "camliType": "foo"}  X  `))
 	if err == nil {
 		t.Errorf("bogus non-whitespace after the JSON object should cause an error")
 	}
@@ -370,8 +370,7 @@ func TestAsClaimAndAsShare(t *testing.T) {
 
 	bb := NewSetAttributeClaim(br, "title", "Test Title")
 	getBlob := func() *Blob {
-		var c *Blob
-		c = bb.Blob()
+		c := bb.Blob()
 		c.ss.Sig = "non-null-sig" // required by AsShare
 		return c
 	}
@@ -410,7 +409,7 @@ func TestAsClaimAndAsShare(t *testing.T) {
 	}
 
 	bb.SetShareTarget(br)
-	s, ok = getBlob().AsShare()
+	_, ok = getBlob().AsShare()
 	if !ok {
 		t.Error("Share claim failed to return share with target")
 	}
@@ -420,7 +419,7 @@ func TestAsClaimAndAsShare(t *testing.T) {
 	bb = bb.SetClaimDate(time.Now())
 	// Would be better to use search.SearchQuery but we can't reference it here.
 	bb.SetShareSearch(&struct{}{})
-	s, ok = getBlob().AsShare()
+	_, ok = getBlob().AsShare()
 	if !ok {
 		t.Error("Share claim failed to return share with search")
 	}

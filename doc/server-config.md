@@ -21,6 +21,10 @@ JSON. It can either be in [simple mode](#simplemode) (for basic configurations),
   * `userpass:alice:secret:vivify=othersecret`: Alice has password "secret",
     but her Android phone can use password "othersecret" to do a minimal set of
     operations (upload new things, but not access anything).
+  * `tailscale:ARG`: permit access only over Tailscale, where ARG is one of:
+    * `full-access-to-tailnet`: to grant full read/write access to Perkeep to any
+      entity on the Tailscale tailnet which has network-level access to the Perkeep server;
+    * `foo@bar`: permit read/write Perkeep accesss only to the provided email (or email-like, e.g. `foo@github`) address.
 
 * `baseURL`: Optional. If non-empty, this is the root of your URL prefix for
   your Perkeep server. Useful for when running behind a reverse proxy.
@@ -40,18 +44,6 @@ JSON. It can either be in [simple mode](#simplemode) (for basic configurations),
        from Let's Encrypt.
   * As a fallback, if no FQDN is found, a self-signed certificate is generated.
 
-* `camliNetIP`: the optional internet-facing IP address for this
-  Perkeep instance. If set, a name in the camlistore.net domain for
-  that IP address will be requested on startup. The obtained domain name
-  will then be used as the host name in the base URL.
-  For now, the protocol to get the name requires receiving a challenge
-  on port 443. Also, this option implies `https`, and that the HTTPS
-  certificate is obtained from [Let's Encrypt](https://letsencrypt.org).
-  For these reasons, this option is mutually exclusive with `baseURL`, `listen`,
-  `httpsCert`, and `httpsKey`.
-  On cloud instances (Google Compute Engine only for now), this option is
-  automatically used.
-
 * `identity`: your GPG fingerprint. A keypair is created for new users on
   start, but this may be changed if you know what you're doing.
 
@@ -60,7 +52,13 @@ JSON. It can either be in [simple mode](#simplemode) (for basic configurations),
   doing.
 
 * `listen`: The port (like "80" or ":80") or IP & port (like "10.0.0.2:8080")
-  to listen for HTTP(s) connections on.
+  to listen for HTTP(s) connections on. Alternatively, the value
+  can be `tailscale` or `tailscale:ARG` to run only on a Tailscale
+  network (tailnet). In that case, the optional `ARG` can be either
+  a directory in which to store the state (if it contains a slash)
+  or else just the name of an instance, in which case the state
+  directory is placed in `~/.config/tsnet-NAME`. The default name
+  is `perkeep`.
 
 * `shareHandler`: if true, the server's sharing functionality is enabled,
   letting your friends have access to any content you've specifically shared.

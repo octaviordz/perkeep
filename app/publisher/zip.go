@@ -243,8 +243,6 @@ func (zh *zipHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	blobFiles := renameDuplicates(bf)
 
-	// TODO(mpl): streaming directly won't work on appengine if the size goes
-	// over 32 MB. Deal with that.
 	h := rw.Header()
 	h.Set("Content-Type", "application/zip")
 	filename := zh.filename
@@ -267,10 +265,10 @@ func (zh *zipHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 		zh := zip.FileHeader{
-			Name:   file.path,
-			Method: zip.Store,
+			Name:     file.path,
+			Method:   zip.Store,
+			Modified: fr.ModTime().UTC(),
 		}
-		zh.SetModTime(fr.ModTime())
 		f, err := zw.CreateHeader(&zh)
 		if err != nil {
 			log.Printf("Could not create %q in zip: %v", file.path, err)

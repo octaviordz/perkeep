@@ -44,7 +44,7 @@ import (
 // pk-put, pk-get, pk, etc) together in large tests, including
 // building them, finding them, and wiring them up in an isolated way.
 type World struct {
-	srcRoot string // typically $GOPATH[0]/src/perkeep.org
+	srcRoot string // typically $GOPATH[0]/src/perkeep.org or just the root dir where go.mod is
 	config  string // server config file relative to pkg/test/testdata
 	tempDir string
 	gobin   string // where the World installs and finds binaries
@@ -54,15 +54,6 @@ type World struct {
 	server    *exec.Cmd
 	isRunning int32 // state of the perkeepd server. Access with sync/atomic only.
 	serverErr error
-}
-
-// pkSourceRoot returns the root of the source tree, or an error.
-func pkSourceRoot() (string, error) {
-	root, err := osutil.GoPackagePath("perkeep.org")
-	if err == os.ErrNotExist {
-		return "", errors.New("directory \"perkeep.org\" not found under GOPATH/src; can't run Perkeep integration tests")
-	}
-	return root, nil
 }
 
 // NewWorld returns a new test world.
@@ -75,7 +66,7 @@ func NewWorld() (*World, error) {
 // This cfg is the server config relative to pkg/test/testdata.
 // It uses the GOPATH (explicit or implicit) to find the "perkeep.org" root.
 func WorldFromConfig(cfg string) (*World, error) {
-	root, err := pkSourceRoot()
+	root, err := osutil.PkSourceRoot()
 	if err != nil {
 		return nil, err
 	}
@@ -108,9 +99,7 @@ func (w *World) Build() error {
 	// Build.
 	{
 		cmd := exec.Command("go", "run", "make.go",
-			"--embed_static=false",
 			"--stampversion=false",
-			"--buildPublisherUI=false",
 			"--targets="+strings.Join([]string{
 				"perkeep.org/server/perkeepd",
 				"perkeep.org/cmd/pk",

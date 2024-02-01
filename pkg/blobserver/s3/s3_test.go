@@ -107,6 +107,9 @@ func TestS3WriteFiles(t *testing.T) {
 	}
 	defer dir.Close()
 	names, err := dir.Readdirnames(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range names {
 		f, err := os.Open(filepath.Join(*flagTestData, name))
 		if err != nil {
@@ -129,7 +132,7 @@ func testStorage(t *testing.T, bucketDir string) {
 	}
 
 	bucketWithDir := path.Join(*bucket, bucketDir)
-	storagetest.Test(t, func(t *testing.T) (sto blobserver.Storage, cleanup func()) {
+	storagetest.Test(t, func(t *testing.T) blobserver.Storage {
 		sto, err := newFromConfig(nil, jsonconfig.Obj{
 			"aws_access_key":        *key,
 			"aws_secret_access_key": *secret,
@@ -193,7 +196,8 @@ func testStorage(t *testing.T, bucketDir string) {
 			}
 		}
 		clearBucket(true)()
-		return sto, clearBucket(false)
+		t.Cleanup(clearBucket(false))
+		return sto
 	})
 }
 

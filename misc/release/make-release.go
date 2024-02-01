@@ -64,7 +64,7 @@ var (
 )
 
 var (
-	pkDir      string
+	srcRoot    string
 	releaseDir string
 	workDir    string
 	goVersion  string
@@ -105,11 +105,11 @@ func main() {
 	checkFlags()
 
 	var err error
-	pkDir, err = osutil.GoPackagePath("perkeep.org")
+	srcRoot, err = osutil.PkSourceRoot()
 	if err != nil {
 		log.Fatalf("Error looking up perkeep.org dir: %v", err)
 	}
-	releaseDir = filepath.Join(pkDir, "misc", "release")
+	releaseDir = filepath.Join(srcRoot, "misc", "release")
 
 	workDir, err = os.MkdirTemp("", "pk-build_release")
 	if err != nil {
@@ -669,7 +669,7 @@ func genReleasePage(releaseData *ReleaseData) error {
 		return fmt.Errorf("could not execute template: %v", err)
 	}
 
-	releaseDocDir := filepath.Join(pkDir, filepath.FromSlash("doc/release"))
+	releaseDocDir := filepath.Join(srcRoot, filepath.FromSlash("doc/release"))
 	if err := os.MkdirAll(releaseDocDir, 0755); err != nil {
 		return err
 	}
@@ -729,8 +729,8 @@ func committers() (map[string]string, error) {
 			committerByName[name] = email
 			continue
 		}
-		c1, _ := commitCountByEmail[firstEmail]
-		c2, _ := commitCountByEmail[email]
+		c1 := commitCountByEmail[firstEmail]
+		c2 := commitCountByEmail[email]
 		if c1 < c2 {
 			delete(committers, firstEmail)
 		} else {
@@ -924,7 +924,7 @@ func ProjectTokenSource(proj string, scopes ...string) (oauth2.TokenSource, erro
 	if err != nil {
 		return nil, fmt.Errorf("reading JSON config from %s: %v", fileName, err)
 	}
-	return conf.TokenSource(oauth2.NoContext), nil
+	return conf.TokenSource(context.TODO()), nil
 }
 
 var bucketProject = map[string]string{

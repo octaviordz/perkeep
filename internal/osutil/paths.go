@@ -342,6 +342,21 @@ func NewJSONConfigParser() *jsonconfig.ConfigParser {
 	return &cp
 }
 
+// PkSourceRoot returns the root of the source tree, or an error.
+func PkSourceRoot() (string, error) {
+	root, err := GoModPackagePath()
+	if err == nil {
+		return root, nil
+	}
+	err = fmt.Errorf("could not found go.mod, trying GOPATH: %w", err)
+	root, errp := GoPackagePath("perkeep.org")
+	if errors.Is(errp, os.ErrNotExist) {
+		return "", fmt.Errorf("directory \"perkeep.org\" not found under GOPATH/src; "+
+			"can't run Perkeep integration tests: %v", errors.Join(err, errp))
+	}
+	return root, nil
+}
+
 // GoPackagePath returns the path to the provided Go package's
 // source directory.
 // pkg may be a path prefix without any *.go files.
@@ -374,6 +389,30 @@ func GoPackagePath(pkg string) (path string, err error) {
 		return dir, nil
 	}
 	return path, os.ErrNotExist
+}
+
+// GoModPackagePath return the absolute path for the go.mod file without "go.mod" suffix.
+func GoModPackagePath() (string, error) {
+	gmp := os.Getenv("GOMOD")
+	if gmp == "" {
+		cmd := exec.Command("go", "env", "GOMOD")
+		out, err := cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("could not run 'go env GOMOD': %v, %s", err, out)
+		}
+		gmp = strings.TrimSuffix(strings.TrimSpace(string(out)), "go.mod")
+		if gmp == "" {
+			return "", os.ErrNotExist
+		}
+	}
+	fi, err := os.Stat(gmp)
+	if err != nil {
+		return "", err
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("%s is not a directory: %w", gmp, os.ErrNotExist)
+	}
+	return gmp, nil
 }
 
 func failInTests() {

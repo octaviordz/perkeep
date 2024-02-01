@@ -292,11 +292,11 @@ func main() {
 	flag.Parse()
 	checkFlags()
 
-	camDir, err := osutil.GoPackagePath("perkeep.org")
+	srcRoot, err := osutil.PkSourceRoot()
 	if err != nil {
 		log.Fatalf("Error looking up perkeep.org dir: %v", err)
 	}
-	dockDir = filepath.Join(camDir, "misc", "docker")
+	dockDir = filepath.Join(srcRoot, "misc", "docker")
 
 	if *asCamlistore {
 		serverImage = "camlistore/server"
@@ -363,7 +363,7 @@ func ProjectTokenSource(proj string, scopes ...string) (oauth2.TokenSource, erro
 	if err != nil {
 		return nil, fmt.Errorf("reading JSON config from %s: %v", fileName, err)
 	}
-	return conf.TokenSource(oauth2.NoContext), nil
+	return conf.TokenSource(context.TODO()), nil
 }
 
 var bucketProject = map[string]string{

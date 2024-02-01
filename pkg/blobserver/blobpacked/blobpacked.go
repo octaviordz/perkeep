@@ -236,7 +236,7 @@ var (
 )
 
 func (s *storage) String() string {
-	return fmt.Sprintf("\"blobpacked\" storage")
+	return `"blobpacked" storage`
 }
 
 func (s *storage) Logf(format string, args ...interface{}) {
@@ -1337,10 +1337,10 @@ func (pk *packer) writeAZip(ctx context.Context, trunc blob.Ref) (err error) {
 		return fmt.Errorf("File schema blob %v filename had a slash in it: %q", pk.fr.SchemaBlobRef(), baseFileName)
 	}
 	fh := &zip.FileHeader{
-		Name:   baseFileName,
-		Method: zip.Store, // uncompressed
+		Name:     baseFileName,
+		Method:   zip.Store, // uncompressed
+		Modified: pk.fr.ModTime(),
 	}
-	fh.SetModTime(pk.fr.ModTime())
 	fh.SetMode(0644)
 	fw, err := zw.CreateHeader(fh)
 	check(err)
